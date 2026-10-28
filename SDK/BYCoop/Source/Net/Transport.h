@@ -47,6 +47,15 @@ public:
 	virtual PeerId HostId() const                  = 0;
 	virtual std::vector<PeerId> Members() const    = 0;
 	virtual void OpenInviteDialog() {}
+	// Online friends (for an in-game invite list; the Steam overlay does not hook D3D8 games)
+	struct Friend
+	{
+		PeerId      id;
+		std::string name;
+		bool        inGame; // currently running the same app (Spacewar 480)
+	};
+	virtual std::vector<Friend> OnlineFriends() { return {}; }
+	virtual bool                Invite( PeerId ) { return false; }
 
 	// Messaging
 	virtual bool Send( PeerId to, const void* data, size_t size, bool reliable ) = 0;

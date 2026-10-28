@@ -45,6 +45,11 @@ struct LobbyChatUpdate_t
 	uint64_t ulSteamIDMakingChange;
 	uint32_t rgfChatMemberStateChange;
 };
+struct GameRichPresenceJoinRequested_t
+{
+	uint64_t steamIDFriend;
+	char     rgchConnect[ 256 ];
+};
 struct GameLobbyJoinRequested_t
 {
 	uint64_t steamIDLobby;
@@ -53,6 +58,7 @@ struct GameLobbyJoinRequested_t
 #pragma pack( pop )
 
 constexpr int CB_GameLobbyJoinRequested = 333;
+constexpr int CB_GameRichPresenceJoinRequested = 337; // "Join game" / accepted invite from the Steam friends list
 constexpr int CB_LobbyEnter             = 504;
 constexpr int CB_LobbyChatUpdate        = 506;
 constexpr int CB_LobbyCreated           = 513;
@@ -232,6 +238,31 @@ public:
 	PeerId HostId() const override { return m_lobby ? m_api.SteamAPI_ISteamMatchmaking_GetLobbyOwner( m_mm, m_lobby ) : 0; }
 	std::vector<PeerId> Members() const override { return m_members; }
 
+	std::vector<Friend> OnlineFriends() override
+	{
+		std::vector<Friend> out;
+		if ( !m_ok ) return out;
+		int n = m_api.SteamAPI_ISteamFriends_GetFriendCount( m_friends, 4 /* immediate */ );
+		for ( int i = 0; i < n; ++i )
+		{
+			uint64_t id = m_api.SteamAPI_ISteamFriends_GetFriendByIndex( m_friends, i, 4 );
+			if ( m_api.SteamAPI_ISteamFriends_GetFriendPersonaState( m_friends, id ) == 0 ) continue; // offline
+			uint8_t info[ 32 ] = {};                                                                    // FriendGameInfo_t
+			bool    inGame     = m_api.SteamAPI_ISteamFriends_GetFriendGamePlayed( m_friends, id, info ) && ( *(uint64_t*)info & 0xffffff ) == 480;
+			const char* nm     = m_api.SteamAPI_ISteamFriends_GetFriendPersonaName( m_friends, id );
+			out.push_back( { id, nm ? nm : "?", inGame } );
+		}
+		return out;
+	}
+
+	bool Invite( PeerId a_id ) override
+	{
+		if ( !m_lobby ) return false;
+		bool ok = m_api.SteamAPI_ISteamMatchmaking_InviteUserToLobby( m_mm, m_lobby, a_id );
+		Log( std::string( ok ? "invited " : "invite failed " ) + std::to_string( a_id ) );
+		return ok;
+	}
+
 	void OpenInviteDialog() override
 	{
 		if ( m_lobby ) m_api.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog( m_friends, m_lobby );
@@ -391,6 +422,17 @@ private:
 				auto* j = (GameLobbyJoinRequested_t*)p;
 				Leave();
 				Join( std::to_string( j->steamIDLobby ) );
+				break;
+			}
+			case CB_GameRichPresenceJoinRequested:
+			{
+				auto*       j = (GameRichPresenceJoinRequested_t*)p;
+				const char* k = strstr( j->rgchConnect, "+connect_lobby " );
+				if ( k )
+				{
+					Leave();
+					Join( std::string( k + 15, strcspn( k + 15, " \"" ) ) );
+				}
 				break;
 			}
 			case CB_SessionRequest:

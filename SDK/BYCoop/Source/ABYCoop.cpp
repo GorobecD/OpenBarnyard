@@ -159,7 +159,14 @@ public:
 			    std::lock_guard<std::mutex> lock( m_oNetMutex );
 			    auto* t = m_session->Transport();
 			    if ( t->IsInSession() ) { m_session->Leave(); Log( "left session (menu)" ); }
-			    else { m_session->Host(); m_bOpenInvite = true; Log( "hosting (menu)" ); }
+			    else
+			    {
+				    m_session->Host();
+				    Log( "hosting (menu)" );
+			    }
+			    // The Steam overlay does not hook this D3D8 game: show our own invite list (mouse)
+			    m_bShowInvite = true;
+			    if ( g_pImGui && !g_pImGui->IsEnabled() ) g_pImGui->Toggle();
 		    } );
 
 		// Network runs on its own thread: Barnyard stops its update loop while the window is inactive
@@ -209,9 +216,47 @@ public:
 	TBOOL HasSettingsUI() override { return TTRUE; }
 	TBOOL IsOverlayVisible() override { return TTRUE; }
 
+	void DrawInviteWindow()
+	{
+		if ( !m_bShowInvite || !m_ready ) return;
+		auto* t = m_session->Transport();
+		ImGui::SetNextWindowSize( ImVec2( 420, 360 ), ImGuiCond_FirstUseEver );
+		ImGui::SetNextWindowPos( ImVec2( 60, 120 ), ImGuiCond_FirstUseEver );
+		bool bOpen = true;
+		if ( ImGui::Begin( "Barnyard Co-op: invite friends", &bOpen ) )
+		{
+			ImGui::Text( "%s", m_session->Status().c_str() );
+			ImGui::TextWrapped( "Friends need Barnyard with BYCoop installed and Steam running. They can also accept from the Steam friends list." );
+			ImGui::Separator();
+			if ( NowSeconds() - m_fFriendsTime > 2.0 )
+			{
+				m_aFriends     = t->OnlineFriends();
+				m_fFriendsTime = NowSeconds();
+			}
+			if ( m_aFriends.empty() ) ImGui::TextDisabled( "No friends online" );
+			for ( auto& f : m_aFriends )
+			{
+				ImGui::PushID( (void*)(uintptr_t)f.id );
+				ImGui::Text( "%s%s", f.name.c_str(), f.inGame ? "  (in game)" : "" );
+				ImGui::SameLine( 300 );
+				if ( ImGui::Button( "Invite" ) ) t->Invite( f.id );
+				ImGui::PopID();
+			}
+			ImGui::Separator();
+			if ( ImGui::Button( "Close" ) ) bOpen = false;
+		}
+		ImGui::End();
+		if ( !bOpen )
+		{
+			m_bShowInvite = false;
+			if ( g_pImGui && g_pImGui->IsEnabled() ) g_pImGui->Toggle();
+		}
+	}
+
 	void OnImGuiRenderOverlay( AImGUI* ) override
 	{
 		std::lock_guard<std::mutex> lock( m_oNetMutex );
+		DrawInviteWindow();
 		ImGui::SetNextWindowPos( ImVec2( 8, 8 ) );
 		ImGui::SetNextWindowBgAlpha( 0.4f );
 		ImGui::Begin( "##bycoop_status", TNULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav );
@@ -247,7 +292,7 @@ public:
 			ImGui::Text( "%s", t->Describe().c_str() );
 			if ( t->IsHost() )
 			{
-				if ( ImGui::Button( "Invite friends (Steam overlay)" ) ) t->OpenInviteDialog();
+				if ( ImGui::Button( "Invite friends" ) ) m_bShowInvite = true;
 				ImGui::SameLine();
 				if ( ImGui::Button( "Copy lobby id" ) ) CopyLobbyId( t->Describe() );
 			}
@@ -290,6 +335,9 @@ private:
 	std::atomic<bool>              m_bRunNet{ false };
 	bool                           m_bOpenInvite = false;
 	char                           m_szDevSpawn[ 64 ] = {};
+	bool                           m_bShowInvite      = false;
+	std::vector<coop::ITransport::Friend> m_aFriends;
+	double                         m_fFriendsTime = 0;
 	coop::Appearance               m_look;
 	bool                           m_ready             = false;
 	char                           m_joinTarget[ 64 ] = {};
