@@ -28,6 +28,19 @@ jobs:
         cd SDK\BYCoop
         cl /nologo /std:c++17 /EHsc /W3 /Fe:test_session.exe Tests\test_session.cpp Source\Net\Session.cpp Source\Net\UdpTransport.cpp ws2_32.lib
         test_session.exe
+        cl /nologo /std:c++17 /EHsc /W3 /Fe:test_two_process.exe Tests\test_two_process.cpp Source\Net\Session.cpp Source\Net\UdpTransport.cpp ws2_32.lib
+
+    - name: Two processes over UDP (Windows sockets)
+      shell: pwsh
+      run: |
+        cd SDK\BYCoop
+        $h = Start-Process -FilePath .\test_two_process.exe -ArgumentList 10 -NoNewWindow -PassThru -RedirectStandardOutput host.txt
+        Start-Sleep -Seconds 2
+        .\test_two_process.exe 6 | Tee-Object joiner.txt
+        $jcode = $LASTEXITCODE
+        $h.WaitForExit()
+        Get-Content host.txt
+        if ($jcode -ne 0 -or $h.ExitCode -ne 0) { Write-Output "::error::two-process UDP test failed"; exit 1 }
 
     - name: Launcher
       shell: cmd
