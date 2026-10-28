@@ -26,15 +26,31 @@ int main(void) {
 	const char* args = GetCommandLineA();
 	if (*args == '"') { args = strchr(args + 1, '"'); args = args ? args + 1 : ""; }
 	else { while (*args && *args != ' ') args++; }
+	/* Optional bycoop.ini next to the launcher (players and tests set options without a command line):
+	   [coop]
+	   name=Cow            ; name shown to others
+	   mode=host           ; host | join | off (off = open the menu with Alt+` and choose there)
+	   join=<lobby id>     ; Steam lobby id, or 127.0.0.1:port with udp_port
+	   udp_port=27100      ; local test without Steam (several copies on one PC)
+	   windowed=0          ; 1 = 1280x720 window */
+	char ini[MAX_PATH], v[128], cfg[512] = "";
+	snprintf(ini, sizeof ini, "%s\\bycoop.ini", dir);
+	if (GetPrivateProfileStringA("coop", "name", "", v, sizeof v, ini) && *v) { strcat(cfg, " -coop-name "); strcat(cfg, v); }
+	if (GetPrivateProfileStringA("coop", "udp_port", "", v, sizeof v, ini) && *v) { strcat(cfg, " -coop-udp "); strcat(cfg, v); }
+	GetPrivateProfileStringA("coop", "mode", "off", v, sizeof v, ini);
+	if (!_stricmp(v, "host")) strcat(cfg, " -coop-host");
+	else if (!_stricmp(v, "join") && GetPrivateProfileStringA("coop", "join", "", v, sizeof v, ini) && *v) { strcat(cfg, " -coop-join "); strcat(cfg, v); }
+	if (GetPrivateProfileIntA("coop", "windowed", 0, ini) && !strstr(args, "-windowed")) strcat(cfg, " -windowed");
+
 	/* Default: fullscreen at the desktop resolution. "-windowed" gives a 1280x720 window
 	   (used to run several copies side by side for testing). */
-	int windowed = strstr(args, "-windowed") != NULL;
+	int windowed = strstr(args, "-windowed") != NULL || strstr(cfg, "-windowed") != NULL;
 	DWORD w = windowed ? 1280 : (DWORD)GetSystemMetrics(SM_CXSCREEN);
 	DWORD h = windowed ? 720 : (DWORD)GetSystemMetrics(SM_CYSCREEN);
 	char extra[128] = "";
 	if (!windowed && !strstr(args, "-fullscreen")) strcat(extra, " -fullscreen");
 	if (!strstr(args, "-width")) snprintf(extra + strlen(extra), sizeof extra - strlen(extra), " -width %lu -height %lu", w, h);
-	snprintf(cmd, sizeof cmd, "\"%s\"%s%s", exe, args, extra);
+	snprintf(cmd, sizeof cmd, "\"%s\"%s%s%s", exe, args, cfg, extra);
 
 	/* Also store the mode in the game's own display settings (HKCU\\Software\\THQ\\Barnyard, read by AOptions). */
 	{
