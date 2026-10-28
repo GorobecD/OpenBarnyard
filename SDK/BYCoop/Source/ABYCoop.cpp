@@ -40,7 +40,7 @@ void Log( const std::string& s )
 	OutputDebugStringA( ( "[BYCoop] " + s + "\n" ).c_str() );
 	if ( FILE* f = fopen( "Logs\\bycoop.txt", "a" ) )
 	{
-		fprintf( f, "%s\n", s.c_str() );
+		fprintf( f, "[%lu] %s\n", GetCurrentProcessId(), s.c_str() ); // pid: several copies share the file
 		fclose( f );
 	}
 }
@@ -100,13 +100,30 @@ public:
 		Log( std::string( "settings: name=" ) + m_look.name + " mode=" + szMode + " join=" + szJoin + " udp=" + std::to_string( iUdpPort ) );
 		const char* udp = iUdpPort ? "" : TNULL;
 
-		coop::ITransport* t = udp ? coop::CreateUdpTransport( (uint16_t)iUdpPort ) : coop::CreateSteamTransport();
-		m_session.reset( new coop::Session( t ) );
-		m_session->onLog = Log;
-
-		std::string err;
-		m_ready = m_session->Start( err );
-		Log( m_ready ? "ready: " + t->Describe() : "network unavailable: " + err );
+		// UDP test mode with mode=auto: the first copy binds udp_port and hosts, later copies on the
+		// same PC bind the next free port and join it. Lets one PC run 2-4 copies from one folder.
+		coop::ITransport* t     = TNULL;
+		std::string       err;
+		const TBOOL       bAuto = !_stricmp( szMode, "auto" );
+		for ( int i = 0; i < ( udp && bAuto ? coop::MAX_PLAYERS : 1 ); i++ )
+		{
+			t = udp ? coop::CreateUdpTransport( (uint16_t)( iUdpPort + i ) ) : coop::CreateSteamTransport();
+			m_session.reset( new coop::Session( t ) );
+			m_session->onLog = Log;
+			m_ready          = m_session->Start( err );
+			if ( m_ready )
+			{
+				if ( bAuto && i == 0 ) strcpy( szMode, "host" );
+				else if ( bAuto )
+				{
+					strcpy( szMode, "join" );
+					snprintf( szJoin, sizeof( szJoin ), "127.0.0.1:%d", iUdpPort );
+					snprintf( m_look.name + strlen( m_look.name ), sizeof( m_look.name ) - strlen( m_look.name ), "%d", i + 1 );
+				}
+				break;
+			}
+		}
+		Log( m_ready ? "ready: " + t->Describe() + " mode=" + szMode : "network unavailable: " + err );
 		m_session->SetLocalAppearance( m_look );
 
 		if ( m_ready && !_stricmp( szMode, "host" ) ) m_session->Host();
