@@ -25,9 +25,16 @@ static const T2CommandLine* g_pCommandLine = TNULL;
 
 namespace
 {
-std::deque<std::string> g_log;
+// NOTE: no globals that allocate. Static initialisers run inside LoadLibrary, before
+// CreateModInstance calls TMemory::Initialise, and Toshi's operator new crashes then (error 1114).
+std::deque<std::string>& LogLines()
+{
+	static std::deque<std::string>* s_pLines = new std::deque<std::string>(); // first use is after TMemory init
+	return *s_pLines;
+}
 void Log( const std::string& s )
 {
+	auto& g_log = LogLines();
 	g_log.push_back( s );
 	if ( g_log.size() > 12 ) g_log.pop_front();
 	OutputDebugStringA( ( "[BYCoop] " + s + "\n" ).c_str() );
@@ -169,7 +176,7 @@ private:
 	void DrawLog()
 	{
 		ImGui::Separator();
-		for ( auto& s : g_log ) ImGui::TextUnformatted( s.c_str() );
+		for ( auto& s : LogLines() ) ImGui::TextUnformatted( s.c_str() );
 	}
 
 	static void CopyLobbyId( const std::string& desc )
