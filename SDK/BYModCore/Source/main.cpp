@@ -95,6 +95,12 @@ DWORD WINAPI MainThread( HMODULE hModule )
 	// Wait until AGUI2 is ready to use
 	for ( TINT i = 0; !AGUI2::IsSingletonCreated() || !AGUI2::GetSingleton()->GetRootElement(); i++ )
 	{
+		if ( i == 600 ) // 30 s without AGUI2: record where every thread is
+		{
+			extern void create_hang_dump( const char* );
+			create_hang_dump( "Logs\\hang.dmp" );
+			RawLog( "wrote Logs\\hang.dmp" );
+		}
 		if ( i % 100 == 0 )
 		{
 			void* pGui = *(void**)0x007b4ff4;

@@ -37,3 +37,15 @@ LONG WINAPI unhandled_handler( struct _EXCEPTION_POINTERS* apExceptionInfo )
 	MessageBoxA( TNULL, "It looks like your game has unfortunately crashed!\n\nContact @infc0re on Discord attaching the crash.dmp file from your game directory.", "Barnyard Crashed", MB_OK );
 	return EXCEPTION_CONTINUE_SEARCH;
 }
+
+// Dumps every thread (with stacks) without an exception, for diagnosing hangs.
+void create_hang_dump( const char* a_szPath )
+{
+	HMODULE           mhLib = ::LoadLibraryA( "dbghelp.dll" );
+	MINIDUMPWRITEDUMP pDump = ( MINIDUMPWRITEDUMP )::GetProcAddress( mhLib, "MiniDumpWriteDump" );
+	if ( !pDump ) return;
+	HANDLE hFile = ::CreateFileA( a_szPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
+	if ( hFile == INVALID_HANDLE_VALUE ) return;
+	pDump( GetCurrentProcess(), GetCurrentProcessId(), hFile, (MINIDUMP_TYPE)( MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory ), NULL, NULL, NULL );
+	::CloseHandle( hFile );
+}
