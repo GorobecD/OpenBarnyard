@@ -63,7 +63,7 @@ jobs:
         msbuild ./OpenBarnyard.slnx "/t:SDK\BYModCore;SDK\BYCoop" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m /nologo /v:m "/flp:Verbosity=normal;LogFile=build.log"
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-          $err = Select-String -Path build.log -Pattern "error|fatal" | Select-Object -First 40
+          $err = Select-String -Path build.log -Pattern "error [CL][0-9]+|fatal error" | Select-Object -First 40
           if (-not $err) { $err = Get-Content build.log -Tail 40 }
           $err | ForEach-Object { Write-Output ("::error::" + "$_".Substring(0, [Math]::Min(900, "$_".Length))) }
         }
