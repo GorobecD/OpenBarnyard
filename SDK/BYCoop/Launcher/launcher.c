@@ -25,7 +25,13 @@ int main(void) {
 	const char* args = GetCommandLineA();
 	if (*args == '"') { args = strchr(args + 1, '"'); args = args ? args + 1 : ""; }
 	else { while (*args && *args != ' ') args++; }
-	snprintf(cmd, sizeof cmd, "\"%s\"%s", exe, args);
+	/* Defaults: windowed 1280x720. Exclusive fullscreen at native resolution failed to create a
+	   D3D8 device on a high-res display (null render interface), and windowed lets several copies
+	   run side by side for testing. Pass -fullscreen or -width/-height to override. */
+	char extra[128] = "";
+	if (!strstr(args, "-fullscreen") && !strstr(args, "-windowed")) strcat(extra, " -windowed");
+	if (!strstr(args, "-width")) strcat(extra, " -width 1280 -height 720");
+	snprintf(cmd, sizeof cmd, "\"%s\"%s%s", exe, args, extra);
 
 	STARTUPINFOA si = { sizeof si };
 	PROCESS_INFORMATION pi;
