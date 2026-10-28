@@ -49,6 +49,9 @@ const char* GetModsDirectory()
 MEMBER_HOOK( 0x006c17f0, TApplication, TApplication_Create, TBOOL, const TCHAR* a_pchName, TINT a_iArgc, TCHAR** a_ppArgv )
 {
 	RawLog( "TApplication::Create hook fired" );
+	// Installed here (game main thread) rather than in DllMain: from DllMain this hook never took
+	// effect on the user's PC (target bytes unchanged in crash.dmp, no InstallHook log line).
+	InstallHook<Mouse_SetCurrentPosition>();
 	// Create the modloader task
 	AGlobalModLoaderTask::CreateSingleton()->Create();
 	RawLog( "mod loader task created, %u mod(s)", AGlobalModLoaderTask::Get()->GetMods().Size() );
@@ -158,10 +161,10 @@ DWORD APIENTRY DllMain( HMODULE hModule, DWORD reason, LPVOID reserved )
 			if ( nStatus == ERROR_SUCCESS ) RegCloseKey( hKey );
 
 			// Initialise hooks
+			RawLog( "DllMain: installing hooks" );
 			AHooks::Initialise();
 			InstallHook<TApplication_Create>();
 			InstallHook<TApplication_Destroy>();
-			InstallHook<Mouse_SetCurrentPosition>();
 			InstallHook<ToshiDestroy>();
 
 			SetConsoleCtrlHandler( exit_handler, TRUE );
