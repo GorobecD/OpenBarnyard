@@ -18,6 +18,9 @@
 #include <cstdio>
 #include <deque>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <atomic>
 
 TOSHI_NAMESPACE_USING
 
@@ -32,8 +35,14 @@ std::deque<std::string>& LogLines()
 	static std::deque<std::string>* s_pLines = new std::deque<std::string>(); // first use is after TMemory init
 	return *s_pLines;
 }
+std::mutex& LogMutex()
+{
+	static std::mutex* s_pMutex = new std::mutex();
+	return *s_pMutex;
+}
 void Log( const std::string& s )
 {
+	std::lock_guard<std::mutex> lock( LogMutex() );
 	auto& g_log = LogLines();
 	g_log.push_back( s );
 	if ( g_log.size() > 12 ) g_log.pop_front();
@@ -128,17 +137,42 @@ public:
 
 		if ( m_ready && !_stricmp( szMode, "host" ) ) m_session->Host();
 		else if ( m_ready && !_stricmp( szMode, "join" ) && *szJoin ) m_session->Join( szJoin );
+
+		// Network runs on its own thread: Barnyard stops its update loop while the window is inactive
+		// (e.g. a second copy in the background), which made the host time the player out and re-join.
+		if ( m_ready )
+		{
+			m_bRunNet = true;
+			m_oNetThread = std::thread( [ this ] {
+				while ( m_bRunNet )
+				{
+					{
+						std::lock_guard<std::mutex> lock( m_oNetMutex );
+						m_session->Update( NowSeconds() );
+					}
+					Sleep( 15 );
+				}
+			} );
+		}
 		return TTRUE;
 	}
 
-	void OnUnload() override { m_session.reset(); }
+	void OnUnload() override
+	{
+		m_bRunNet = false;
+		if ( m_oNetThread.joinable() ) m_oNetThread.join();
+		m_session.reset();
+	}
 
 	TBOOL OnUpdate( TFLOAT ) override
 	{
 		if ( !m_ready ) return TTRUE;
 		coop::Pose pose;
-		if ( ReadLocalPose( pose ) ) m_session->SetLocalPose( pose );
-		m_session->Update( NowSeconds() );
+		if ( ReadLocalPose( pose ) )
+		{
+			std::lock_guard<std::mutex> lock( m_oNetMutex );
+			m_session->SetLocalPose( pose );
+		}
 		return TTRUE;
 	}
 
@@ -147,6 +181,7 @@ public:
 
 	void OnImGuiRenderOverlay( AImGUI* ) override
 	{
+		std::lock_guard<std::mutex> lock( m_oNetMutex );
 		ImGui::SetNextWindowPos( ImVec2( 8, 8 ) );
 		ImGui::SetNextWindowBgAlpha( 0.4f );
 		ImGui::Begin( "##bycoop_status", TNULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav );
@@ -156,6 +191,7 @@ public:
 
 	void OnImGuiRender( AImGUI* ) override
 	{
+		std::unique_lock<std::mutex> lock( m_oNetMutex );
 		ImGui::Text( "Barnyard Co-op (up to 4 players)" );
 		if ( !m_ready )
 		{
@@ -201,6 +237,7 @@ private:
 	void DrawLog()
 	{
 		ImGui::Separator();
+		std::lock_guard<std::mutex> lock( LogMutex() );
 		for ( auto& s : LogLines() ) ImGui::TextUnformatted( s.c_str() );
 	}
 
@@ -218,6 +255,9 @@ private:
 	}
 
 	std::unique_ptr<coop::Session> m_session;
+	std::thread                    m_oNetThread;
+	std::mutex                     m_oNetMutex;
+	std::atomic<bool>              m_bRunNet{ false };
 	coop::Appearance               m_look;
 	bool                           m_ready             = false;
 	char                           m_joinTarget[ 64 ] = {};
