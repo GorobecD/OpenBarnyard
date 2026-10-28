@@ -33,6 +33,19 @@ int main(void) {
 	if (!strstr(args, "-width")) strcat(extra, " -width 1280 -height 720");
 	snprintf(cmd, sizeof cmd, "\"%s\"%s%s", exe, args, extra);
 
+	/* The command-line switches above are not always seen by ModCore, so also set the game's own
+	   display settings (HKCU\\Software\\THQ\\Barnyard, read by AOptions) unless -fullscreen. */
+	if (!strstr(args, "-fullscreen")) {
+		HKEY k;
+		if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\THQ\\Barnyard", 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
+			DWORD w = 1280, h = 720, win = 1;
+			RegSetValueExA(k, "Width", 0, REG_DWORD, (const BYTE*)&w, sizeof w);
+			RegSetValueExA(k, "Height", 0, REG_DWORD, (const BYTE*)&h, sizeof h);
+			RegSetValueExA(k, "RealForcedWindowed", 0, REG_DWORD, (const BYTE*)&win, sizeof win);
+			RegCloseKey(k);
+		}
+	}
+
 	STARTUPINFOA si = { sizeof si };
 	PROCESS_INFORMATION pi;
 	if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, dir, &si, &pi))

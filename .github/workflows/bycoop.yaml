@@ -33,7 +33,7 @@ jobs:
       shell: cmd
       run: |
         cd SDK\BYCoop\Launcher
-        cl /nologo /O2 /W3 /MT /Fe:BYCoopLauncher.exe launcher.c user32.lib
+        cl /nologo /O2 /W3 /MT /Fe:BYCoopLauncher.exe launcher.c user32.lib advapi32.lib
 
     - uses: abel0b/setup-premake@v2.3
       with:
