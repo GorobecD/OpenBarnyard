@@ -61,7 +61,7 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force out | Out-Null
         New-Item -ItemType Directory -Force out\Mods | Out-Null
-        Get-ChildItem bin -Recurse -Include BYModCore.dll | Copy-Item -Destination out
+        Get-ChildItem bin -Recurse -Include BYModCore.dll,BYModCore.pdb | Where-Object { $_.DirectoryName -like '*\BYModCore' } | Copy-Item -Destination out
         Get-ChildItem bin -Recurse -Include BYCoop.dll,BYCoop.pdb | Copy-Item -Destination out\Mods
         Copy-Item SDK\BYCoop\Launcher\BYCoopLauncher.exe out
         Get-ChildItem -Recurse out

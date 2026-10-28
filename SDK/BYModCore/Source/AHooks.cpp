@@ -553,7 +553,8 @@ MEMBER_HOOK( 0x006c6de0, TRenderD3DInterface, TRenderD3DInterface_OnD3DDeviceLos
 		return;
 
 	CallOriginal();
-	AImGUI::GetSingleton()->OnD3DDeviceLost();
+	// AImGUI only exists once AGUI2 is ready; alt-tab during the intro used to crash here
+	if ( AImGUI::IsSingletonCreated() ) AImGUI::GetSingleton()->OnD3DDeviceLost();
 }
 
 MEMBER_HOOK( 0x006c6e80, TRenderD3DInterface, TRenderD3DInterface_OnD3DDeviceFound, void )
@@ -563,7 +564,8 @@ MEMBER_HOOK( 0x006c6e80, TRenderD3DInterface, TRenderD3DInterface_OnD3DDeviceFou
 		return;
 
 	CallOriginal();
-	AImGUI::GetSingleton()->OnD3DDeviceFound();
+	// AImGUI only exists once AGUI2 is ready; alt-tab during the intro used to crash here
+	if ( AImGUI::IsSingletonCreated() ) AImGUI::GetSingleton()->OnD3DDeviceFound();
 }
 
 MEMBER_HOOK( 0x006154c0, ARenderer, ARenderer_CreateTRender, TBOOL )

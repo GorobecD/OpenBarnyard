@@ -95,7 +95,13 @@ DWORD WINAPI MainThread( HMODULE hModule )
 	// Wait until AGUI2 is ready to use
 	for ( TINT i = 0; !AGUI2::IsSingletonCreated() || !AGUI2::GetSingleton()->GetRootElement(); i++ )
 	{
-		if ( i % 100 == 0 ) RawLog( "waiting for AGUI2: singleton=%p", *(void**)0x007b4ff4 );
+		if ( i % 100 == 0 )
+		{
+			void* pGui = *(void**)0x007b4ff4;
+			RawLog( "waiting for AGUI2: singleton=%p raw+0x20=%p sdk root=%p sizeof(TTask)=%u", pGui,
+			        pGui ? *(void**)( (char*)pGui + 0x20 ) : TNULL,
+			        AGUI2::IsSingletonCreated() ? (void*)AGUI2::GetSingleton()->GetRootElement() : TNULL, (unsigned)sizeof( Toshi::TTask ) );
+		}
 		ThreadSleep( 50 );
 	}
 	RawLog( "AGUI2 ready" );
