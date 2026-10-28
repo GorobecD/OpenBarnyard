@@ -101,6 +101,12 @@ typedef void* Iface;
 	X( uint64_t, SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex, ( Iface, uint64_t, int ) )            \
 	X( bool, SteamAPI_ISteamFriends_SetRichPresence, ( Iface, const char*, const char* ) )               \
 	X( void, SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog, ( Iface, uint64_t ) )               \
+	X( int, SteamAPI_ISteamFriends_GetFriendCount, ( Iface, int ) )                                         \
+	X( uint64_t, SteamAPI_ISteamFriends_GetFriendByIndex, ( Iface, int, int ) )                             \
+	X( int, SteamAPI_ISteamFriends_GetFriendPersonaState, ( Iface, uint64_t ) )                             \
+	X( const char*, SteamAPI_ISteamFriends_GetFriendPersonaName, ( Iface, uint64_t ) )                      \
+	X( bool, SteamAPI_ISteamFriends_GetFriendGamePlayed, ( Iface, uint64_t, void* ) )                       \
+	X( bool, SteamAPI_ISteamMatchmaking_InviteUserToLobby, ( Iface, uint64_t, uint64_t ) )                  \
 	X( void, SteamAPI_SteamNetworkingIdentity_SetSteamID64, ( void*, uint64_t ) )                        \
 	X( uint64_t, SteamAPI_SteamNetworkingIdentity_GetSteamID64, ( void* ) )                              \
 	X( int, SteamAPI_ISteamNetworkingMessages_SendMessageToUser, ( Iface, const void*, const void*, uint32_t, int, int ) ) \
