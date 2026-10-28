@@ -76,7 +76,19 @@ AImGUI::AImGUI()
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 
-	io.Fonts->AddFontFromFileTTF( "Resources/Fonts/Bahnschrift.ttf", 17.0f );
+	// Font: game-local copy, else the Windows system copy, else ImGui's built-in font
+	// (missing file used to assert and abort the game).
+	{
+		char szSysFont[ MAX_PATH ] = {};
+		GetWindowsDirectoryA( szSysFont, MAX_PATH );
+		strcat_s( szSysFont, "\\Fonts\\bahnschrift.ttf" );
+
+		const char* aCandidates[] = { "Resources/Fonts/Bahnschrift.ttf", szSysFont };
+		ImFont*     pFont         = TNULL;
+		for ( const char* szPath : aCandidates )
+			if ( GetFileAttributesA( szPath ) != INVALID_FILE_ATTRIBUTES && ( pFont = io.Fonts->AddFontFromFileTTF( szPath, 17.0f ) ) ) break;
+		if ( !pFont ) io.Fonts->AddFontDefault();
+	}
 
 	// TRV style
 	ImGuiStyle& style  = ImGui::GetStyle();
