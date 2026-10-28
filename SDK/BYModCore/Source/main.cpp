@@ -46,6 +46,18 @@ const char* GetModsDirectory()
 	return "Mods\\";
 }
 
+// Game bug: WM_MOUSEMOVE before the DirectInput mouse exists calls
+// TInputDXDeviceMouse::SetCurrentPosition on a null device and crashes at startup
+// (barnyard.exe+0x2d4179 writing [0x48]) if the cursor moves over the window while loading.
+struct AMouseDeviceStub
+{};
+MEMBER_HOOK( 0x006d4140, AMouseDeviceStub, Mouse_SetCurrentPosition, void, TINT a_iX, TINT a_iY )
+{
+	void* volatile pThis = this;
+	if ( pThis == TNULL ) return;
+	CallOriginal( a_iX, a_iY );
+}
+
 MEMBER_HOOK( 0x006c17f0, TApplication, TApplication_Create, TBOOL, const TCHAR* a_pchName, TINT a_iArgc, TCHAR** a_ppArgv )
 {
 	RawLog( "TApplication::Create hook fired" );
@@ -57,18 +69,6 @@ MEMBER_HOOK( 0x006c17f0, TApplication, TApplication_Create, TBOOL, const TCHAR* 
 	RawLog( "mod loader task created, %u mod(s)", AGlobalModLoaderTask::Get()->GetMods().Size() );
 
 	return CallOriginal( a_pchName, a_iArgc, a_ppArgv );
-}
-
-// Game bug: WM_MOUSEMOVE before the DirectInput mouse exists calls
-// TInputDXDeviceMouse::SetCurrentPosition on a null device and crashes at startup
-// (barnyard.exe+0x2d4179 writing [0x48]) if the cursor moves over the window while loading.
-struct AMouseDeviceStub
-{};
-MEMBER_HOOK( 0x006d4140, AMouseDeviceStub, Mouse_SetCurrentPosition, void, TINT a_iX, TINT a_iY )
-{
-	void* volatile pThis = this;
-	if ( pThis == TNULL ) return;
-	CallOriginal( a_iX, a_iY );
 }
 
 MEMBER_HOOK( 0x006c1760, TApplication, TApplication_Destroy, void )
