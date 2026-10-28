@@ -135,6 +135,7 @@ group "SDK"
 	include "SDK/BYSpeedrunHelper"
 	include "SDK/BYTexturePacks"
 	include "SDK/BYWinterMod"
+	include "SDK/BYCoop"
 
 	if _OPTIONS["renderer"] == 'GL' then
 		include "SDK/BYEnhanced"

@@ -1,0 +1,51 @@
+name: BYCoop
+
+on:
+  push:
+    paths: [ "SDK/BYCoop/**", "SDK/BYModCore/**", "SDK/BYardSDK/**", ".github/workflows/bycoop.yaml" ]
+  workflow_dispatch:
+
+jobs:
+  win:
+    runs-on: windows-latest
+    env:
+      PREMAKE_VERSION: 5.0.0-beta8
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x86
+
+    - name: Network layer tests (no game needed)
+      shell: cmd
+      run: |
+        cd SDK\BYCoop
+        cl /nologo /std:c++17 /EHsc /W3 /Fe:test_session.exe Tests\test_session.cpp Source\Net\Session.cpp Source\Net\UdpTransport.cpp ws2_32.lib
+        test_session.exe
+
+    - uses: abel0b/setup-premake@v2.3
+      with:
+        version: ${{ env.PREMAKE_VERSION }}
+
+    - name: Premake
+      run: premake5 vs2026 --arch=x86 --renderer=DX8
+
+    - uses: microsoft/setup-msbuild@v2
+
+    - name: Build BYCoop (Release)
+      run: msbuild ./OpenBarnyard.slnx /t:SDK\BYCoop /p:Configuration=Release /p:PlatformToolset=v143 /m
+
+    - name: Collect
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force out | Out-Null
+        Get-ChildItem bin -Recurse -Include BYCoop.dll,BYModCore.dll,BYCoop.pdb | Copy-Item -Destination out
+        Get-ChildItem out
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: BYCoop
+        path: out
