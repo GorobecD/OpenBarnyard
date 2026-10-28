@@ -28,8 +28,8 @@ constexpr TUINT OFF_BTN_ID            = 0x60;
 constexpr TUINT OFF_BTN_SCALEONFOCUS  = 0x64;
 constexpr TUINT OFF_BTN_TRANSFORM     = 0x10;
 
-typedef void*( __cdecl* t_Malloc )( TUINT, TINT, TINT, TINT );
-typedef void*( __cdecl* t_FindFont )( const char* );
+typedef void*( __stdcall* t_Malloc )( TUINT, TINT, TINT, TINT ); // ret 0x10
+typedef void*( __stdcall* t_FindFont )( const char* ); // ret 4
 typedef const wchar_t*( __thiscall* t_GetString )( void* a_pLocale, TINT a_iId );
 typedef TFLOAT( __thiscall* t_GetTextWidth )( void* a_pFont, const wchar_t* a_wszText, TFLOAT a_fScale );
 typedef void( __thiscall* t_BtnCtor )( void* );
