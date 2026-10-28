@@ -3,6 +3,7 @@
 // Builds on OpenBarnyard's BYModCore / BYardSDK (credit: InfiniteC0re and contributors).
 #include "pch.h"
 #include "Net/Session.h"
+#include "MainMenuButton.h"
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -138,6 +139,27 @@ public:
 		if ( m_ready && !_stricmp( szMode, "host" ) ) m_session->Host();
 		else if ( m_ready && !_stricmp( szMode, "join" ) && *szJoin ) m_session->Join( szJoin );
 
+		// MULTIPLAYER button in the main menu (game-styled popup instead of the Alt+` overlay)
+		MainMenuButton::Install(
+		    [ this ]( bool a_bRu, std::wstring& a_rTitle, std::wstring& a_rMsg ) {
+			    std::lock_guard<std::mutex> lock( m_oNetMutex );
+			    const bool bIn = m_ready && m_session->Transport()->IsInSession();
+			    a_rTitle       = a_bRu ? L"\x041c\x0423\x041b\x042c\x0422\x0418\x041f\x041b\x0415\x0415\x0420" : L"MULTIPLAYER";
+			    if ( !m_ready )
+				    a_rMsg = a_bRu ? L"\x0421\x0435\x0442\x044c \x043d\x0435\x0434\x043e\x0441\x0442\x0443\x043f\x043d\x0430. \x0417\x0430\x043f\x0443\x0441\x0442\x0438\x0442\x0435 Steam." : L"Network unavailable. Start Steam and restart the game.";
+			    else if ( !bIn )
+				    a_rMsg = a_bRu ? L"\x0421\x043e\x0437\x0434\x0430\x0442\x044c \x0438\x0433\x0440\x0443 \x0434\x043b\x044f \x0434\x0440\x0443\x0437\x0435\x0439? \x041e\x043d\x0438 \x043f\x043e\x0434\x043a\x043b\x044e\x0447\x0430\x0442\x0441\x044f \x043f\x043e \x043f\x0440\x0438\x0433\x043b\x0430\x0448\x0435\x043d\x0438\x044e Steam." : L"Host a co-op game? Friends join through a Steam invite.";
+			    else
+				    a_rMsg = a_bRu ? L"\x0412\x044b \x0432 \x043a\x043e\x043e\x043f\x0435\x0440\x0430\x0442\x0438\x0432\x0435. \x0412\x044b\x0439\x0442\x0438 \x0438\x0437 \x0441\x0435\x0441\x0441\x0438\x0438?" : L"You are in a co-op session. Leave it?";
+		    },
+		    [ this ]( bool a_bYes ) {
+			    if ( !a_bYes || !m_ready ) return;
+			    std::lock_guard<std::mutex> lock( m_oNetMutex );
+			    auto* t = m_session->Transport();
+			    if ( t->IsInSession() ) { m_session->Leave(); Log( "left session (menu)" ); }
+			    else { m_session->Host(); m_bOpenInvite = true; Log( "hosting (menu)" ); }
+		    } );
+
 		// Network runs on its own thread: Barnyard stops its update loop while the window is inactive
 		// (e.g. a second copy in the background), which made the host time the player out and re-join.
 		if ( m_ready )
@@ -149,6 +171,11 @@ public:
 					{
 						std::lock_guard<std::mutex> lock( m_oNetMutex );
 						m_session->Update( NowSeconds() );
+						if ( m_bOpenInvite && m_session->Transport()->IsInSession() )
+						{
+							m_bOpenInvite = false;
+							m_session->Transport()->OpenInviteDialog();
+						}
 					}
 					Sleep( 15 );
 				}
@@ -258,6 +285,7 @@ private:
 	std::thread                    m_oNetThread;
 	std::mutex                     m_oNetMutex;
 	std::atomic<bool>              m_bRunNet{ false };
+	bool                           m_bOpenInvite = false;
 	coop::Appearance               m_look;
 	bool                           m_ready             = false;
 	char                           m_joinTarget[ 64 ] = {};
