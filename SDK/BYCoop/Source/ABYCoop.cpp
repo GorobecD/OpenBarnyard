@@ -31,6 +31,11 @@ void Log( const std::string& s )
 	g_log.push_back( s );
 	if ( g_log.size() > 12 ) g_log.pop_front();
 	OutputDebugStringA( ( "[BYCoop] " + s + "\n" ).c_str() );
+	if ( FILE* f = fopen( "Logs\\bycoop.txt", "a" ) )
+	{
+		fprintf( f, "%s\n", s.c_str() );
+		fclose( f );
+	}
 }
 
 double NowSeconds()
@@ -66,6 +71,7 @@ class ABYCoop : public AModInstance
 public:
 	TBOOL OnLoad() override
 	{
+		Log( "BYCoop OnLoad" );
 		// -coop-udp <port> : local test mode (several copies on one PC). Default: Steam.
 		const char* cl   = GetCommandLineA();
 		const char* udp  = strstr( cl, "-coop-udp " );
@@ -105,6 +111,16 @@ public:
 	}
 
 	TBOOL HasSettingsUI() override { return TTRUE; }
+	TBOOL IsOverlayVisible() override { return TTRUE; }
+
+	void OnImGuiRenderOverlay( AImGUI* ) override
+	{
+		ImGui::SetNextWindowPos( ImVec2( 8, 8 ) );
+		ImGui::SetNextWindowBgAlpha( 0.4f );
+		ImGui::Begin( "##bycoop_status", TNULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav );
+		ImGui::Text( "BYCoop %s | Alt+` menu", m_ready ? m_session->Status().c_str() : "network unavailable" );
+		ImGui::End();
+	}
 
 	void OnImGuiRender( AImGUI* ) override
 	{

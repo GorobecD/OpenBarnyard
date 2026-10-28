@@ -74,9 +74,12 @@ TBOOL AModLoaderTask::OnCreate()
 	return TTRUE;
 }
 
+void RawLog( const char* a_szFormat, ... );
+
 void AModLoaderTask::LoadMods()
 {
 	TINFO( "Loading mods...\n" );
+	RawLog( "loading mods from %s", GetModsDirectory() );
 
 	// Load the mods
 	for ( const auto& entry : std::filesystem::directory_iterator( GetModsDirectory() ) )
@@ -89,6 +92,7 @@ void AModLoaderTask::LoadMods()
 			TStringManager::StringUnicodeToChar( dllPath, entry.path().native().c_str(), -1 );
 
 			HMODULE hModule             = LoadLibraryW( dll );
+			RawLog( "LoadLibrary %s -> %p (error %lu)", dllPath, hModule, hModule ? 0ul : GetLastError() );
 			auto    fnCreateModInstance = TREINTERPRETCAST( t_CreateModInstance, GetProcAddress( hModule, "CreateModInstance" ) );
 			auto    fnGetVersion        = TREINTERPRETCAST( t_GetModVersion, GetProcAddress( hModule, "GetModVersion" ) );
 			auto    fnGetName           = TREINTERPRETCAST( t_GetModName, GetProcAddress( hModule, "GetModName" ) );
@@ -107,7 +111,9 @@ void AModLoaderTask::LoadMods()
 
 					TLOGUP()
 					{
-						if ( pModInstance->OnLoad() )
+						const TBOOL bLoaded = pModInstance->OnLoad();
+						RawLog( "%s OnLoad -> %d", pModInstance->GetName(), bLoaded );
+						if ( bLoaded )
 						{
 							TINFO( "Successfully initialised!\n" );
 							m_LoadedMods.PushBack( pModInstance );

@@ -28,6 +28,19 @@ TOSHI_NAMESPACE_USING
 static T2CommandLine g_CommandLine;
 const T2CommandLine* g_pCommandLine = &g_CommandLine;
 
+// Unbuffered breadcrumbs (Toshi's log file is buffered and may never flush if the game hangs)
+void RawLog( const char* a_szFormat, ... )
+{
+	FILE* f = fopen( "Logs\\modcore_raw.txt", "a" );
+	if ( !f ) return;
+	va_list args;
+	va_start( args, a_szFormat );
+	vfprintf( f, a_szFormat, args );
+	va_end( args );
+	fputc( '\n', f );
+	fclose( f );
+}
+
 const char* GetModsDirectory()
 {
 	return "Mods\\";
@@ -35,8 +48,10 @@ const char* GetModsDirectory()
 
 MEMBER_HOOK( 0x006c17f0, TApplication, TApplication_Create, TBOOL, const TCHAR* a_pchName, TINT a_iArgc, TCHAR** a_ppArgv )
 {
+	RawLog( "TApplication::Create hook fired" );
 	// Create the modloader task
 	AGlobalModLoaderTask::CreateSingleton()->Create();
+	RawLog( "mod loader task created, %u mod(s)", AGlobalModLoaderTask::Get()->GetMods().Size() );
 
 	return CallOriginal( a_pchName, a_iArgc, a_ppArgv );
 }
@@ -61,9 +76,14 @@ DWORD WINAPI MainThread( HMODULE hModule )
 	TINFO( "BYModCore thread has been started!\n" );
 	TINFO( "Waiting for Toshi systems to be loaded...\n" );
 
+	RawLog( "main thread started" );
 	// Wait until AGUI2 is ready to use
-	while ( !AGUI2::IsSingletonCreated() || !AGUI2::GetSingleton()->GetRootElement() )
+	for ( TINT i = 0; !AGUI2::IsSingletonCreated() || !AGUI2::GetSingleton()->GetRootElement(); i++ )
+	{
+		if ( i % 100 == 0 ) RawLog( "waiting for AGUI2: singleton=%p", *(void**)0x007b4ff4 );
 		ThreadSleep( 50 );
+	}
+	RawLog( "AGUI2 ready" );
 
 	// Log info about AGUI2
 	TFLOAT fWidth, fHeight;
