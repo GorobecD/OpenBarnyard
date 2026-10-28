@@ -46,6 +46,22 @@ const char* GetModsDirectory()
 	return "Mods\\";
 }
 
+// Several copies on one PC (BYCoop local tests): barnyard.exe refuses to start a second copy
+// (named mutex "BARNYARD", AppBoot entry 0x004044a0, returns 0 silently). When bycoop.ini sets
+// udp_port, give each copy its own mutex name.
+static HANDLE( WINAPI* s_pOrigCreateMutexA )( LPSECURITY_ATTRIBUTES, BOOL, LPCSTR ) = CreateMutexA;
+static HANDLE WINAPI Hook_CreateMutexA( LPSECURITY_ATTRIBUTES a_pAttr, BOOL a_bOwner, LPCSTR a_szName )
+{
+	if ( a_szName && strcmp( a_szName, "BARNYARD" ) == 0 && GetPrivateProfileIntA( "coop", "udp_port", 0, ".\\bycoop.ini" ) != 0 )
+	{
+		char szName[ 64 ];
+		sprintf_s( szName, "BARNYARD_%lu", GetCurrentProcessId() );
+		RawLog( "multi-instance: mutex %s", szName );
+		return s_pOrigCreateMutexA( a_pAttr, a_bOwner, szName );
+	}
+	return s_pOrigCreateMutexA( a_pAttr, a_bOwner, a_szName );
+}
+
 // Game bug: WM_MOUSEMOVE before the DirectInput mouse exists calls
 // TInputDXDeviceMouse::SetCurrentPosition on a null device and crashes at startup
 // (barnyard.exe+0x2d4179 writing [0x48]) if the cursor moves over the window while loading.
@@ -179,6 +195,7 @@ DWORD APIENTRY DllMain( HMODULE hModule, DWORD reason, LPVOID reserved )
 			InstallHook<TApplication_Create>();
 			InstallHook<TApplication_Destroy>();
 			InstallHook<ToshiDestroy>();
+			InstallHook( reinterpret_cast<void*&>( s_pOrigCreateMutexA ), (void*)Hook_CreateMutexA );
 
 			SetConsoleCtrlHandler( exit_handler, TRUE );
 
