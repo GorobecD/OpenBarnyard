@@ -5,6 +5,9 @@ on:
     paths: [ "SDK/BYCoop/**", "SDK/BYModCore/**", "SDK/BYardSDK/**", ".github/workflows/bycoop.yaml" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   win:
     runs-on: windows-latest
@@ -68,3 +71,19 @@ jobs:
       with:
         name: BYCoop
         path: out
+
+    - name: Publish binaries to branch bycoop-bin
+      shell: pwsh
+      run: |
+        git config user.name "bycoop-ci"
+        git config user.email "bycoop-ci@users.noreply.github.com"
+        $sha = git rev-parse --short HEAD
+        Copy-Item -Recurse out $env:RUNNER_TEMP\pkg
+        git checkout --orphan bycoop-bin
+        git rm -rq --cached .
+        Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
+        Copy-Item -Recurse $env:RUNNER_TEMP\pkg\* .
+        Set-Content BUILD.txt "BYCoop build from $sha"
+        git add -A
+        git commit -qm "BYCoop binaries from $sha"
+        git push -f origin bycoop-bin
