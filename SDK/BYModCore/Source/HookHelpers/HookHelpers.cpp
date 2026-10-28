@@ -31,12 +31,19 @@ bool WriteJump(void* jumpAddress, void* output)
 #endif
 }
 
+void RawLog( const char* a_szFormat, ... );
+
 void InstallHook(void*& origFunc, void* hookFunc)
 {
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    DetourAttach(&origFunc, hookFunc);
-    DetourTransactionCommit();
+    void* pTarget = origFunc;
+    LONG  r1      = DetourTransactionBegin();
+    LONG  r2      = DetourUpdateThread(GetCurrentThread());
+    LONG  r3      = DetourAttach(&origFunc, hookFunc);
+    LONG  r4      = DetourTransactionCommit();
+    if ( r1 || r2 || r3 || r4 )
+        RawLog( "InstallHook %p FAILED: begin %ld update %ld attach %ld commit %ld", pTarget, r1, r2, r3, r4 );
+    else
+        RawLog( "InstallHook %p ok (first byte now %02x)", pTarget, *(unsigned char*)pTarget );
 }
 
 void* InstallVTableHook(void** vtable, std::size_t virtualFuncIndex, void* hookFunc)
