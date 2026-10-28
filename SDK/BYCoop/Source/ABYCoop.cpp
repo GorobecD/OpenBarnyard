@@ -80,14 +80,27 @@ public:
 	{
 		Log( "BYCoop OnLoad" );
 		Log( std::string( "command line: " ) + GetCommandLineA() );
-		// -coop-udp <port> : local test mode (several copies on one PC). Default: Steam.
-		const char* cl   = GetCommandLineA();
-		const char* udp  = strstr( cl, "-coop-udp " );
-		const char* name = strstr( cl, "-coop-name " );
-		if ( name ) sscanf( name + 11, "%23s", m_look.name );
-		else strcpy( m_look.name, "Cow" );
+		// Settings: bycoop.ini next to barnyard.exe, overridden by -coop-* command-line switches.
+		// (On the user's PC the game process does not see the launcher's arguments, so the ini is primary.)
+		const char* cl = GetCommandLineA();
+		char        szIni[ MAX_PATH ];
+		GetModuleFileNameA( NULL, szIni, MAX_PATH );
+		strcpy( strrchr( szIni, '\\' ) + 1, "bycoop.ini" );
 
-		coop::ITransport* t = udp ? coop::CreateUdpTransport( (uint16_t)atoi( udp + 10 ) ) : coop::CreateSteamTransport();
+		char szMode[ 16 ], szJoin[ 64 ];
+		GetPrivateProfileStringA( "coop", "name", "Cow", m_look.name, sizeof( m_look.name ), szIni );
+		GetPrivateProfileStringA( "coop", "mode", "off", szMode, sizeof( szMode ), szIni );
+		GetPrivateProfileStringA( "coop", "join", "", szJoin, sizeof( szJoin ), szIni );
+		int iUdpPort = GetPrivateProfileIntA( "coop", "udp_port", 0, szIni );
+
+		if ( const char* p = strstr( cl, "-coop-name " ) ) sscanf( p + 11, "%23s", m_look.name );
+		if ( const char* p = strstr( cl, "-coop-udp " ) ) iUdpPort = atoi( p + 10 );
+		if ( strstr( cl, "-coop-host" ) ) strcpy( szMode, "host" );
+		if ( const char* p = strstr( cl, "-coop-join " ) ) { strcpy( szMode, "join" ); sscanf( p + 11, "%63s", szJoin ); }
+		Log( std::string( "settings: name=" ) + m_look.name + " mode=" + szMode + " join=" + szJoin + " udp=" + std::to_string( iUdpPort ) );
+		const char* udp = iUdpPort ? "" : TNULL;
+
+		coop::ITransport* t = udp ? coop::CreateUdpTransport( (uint16_t)iUdpPort ) : coop::CreateSteamTransport();
 		m_session.reset( new coop::Session( t ) );
 		m_session->onLog = Log;
 
@@ -96,14 +109,8 @@ public:
 		Log( m_ready ? "ready: " + t->Describe() : "network unavailable: " + err );
 		m_session->SetLocalAppearance( m_look );
 
-		// auto host/join for scripted tests: -coop-host / -coop-join <target>
-		if ( m_ready && strstr( cl, "-coop-host" ) ) m_session->Host();
-		if ( const char* j = strstr( cl, "-coop-join " ) )
-		{
-			char target[ 64 ] = {};
-			sscanf( j + 11, "%63s", target );
-			if ( m_ready ) m_session->Join( target );
-		}
+		if ( m_ready && !_stricmp( szMode, "host" ) ) m_session->Host();
+		else if ( m_ready && !_stricmp( szMode, "join" ) && *szJoin ) m_session->Join( szJoin );
 		return TTRUE;
 	}
 
