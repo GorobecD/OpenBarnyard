@@ -26,7 +26,9 @@ workspace "OpenBarnyard"
 		"NOMINMAX",
 		"BAN_OPCODE_AUTOLINK",
 		"ICE_NO_DLL",
-		"BARNYARD_COMMUNITY_PATCH", -- Optimize loading speed, fix bugs and more...
+		-- BYCoop: disabled. It adds members (e.g. TRenderInterface +8 bytes) so SDK/mod code no longer matches
+		-- the retail exe layout: ModCore read the D3D device at +0x680 instead of +0x678 and crashed.
+		-- "BARNYARD_COMMUNITY_PATCH", -- Optimize loading speed, fix bugs and more...
 		"USE_ATOMIC"                -- Utilize alternative TMutex, TSemaphore and TFifo implementation on Windows platform
 	}
 
