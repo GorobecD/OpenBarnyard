@@ -26,6 +26,12 @@ jobs:
         cl /nologo /std:c++17 /EHsc /W3 /Fe:test_session.exe Tests\test_session.cpp Source\Net\Session.cpp Source\Net\UdpTransport.cpp ws2_32.lib
         test_session.exe
 
+    - name: Launcher
+      shell: cmd
+      run: |
+        cd SDK\BYCoop\Launcher
+        cl /nologo /O2 /W3 /MT /Fe:BYCoopLauncher.exe launcher.c user32.lib
+
     - uses: abel0b/setup-premake@v2.3
       with:
         version: ${{ env.PREMAKE_VERSION }}
@@ -36,13 +42,17 @@ jobs:
     - uses: microsoft/setup-msbuild@v2
 
     - name: Build BYCoop (Release)
-      run: msbuild ./OpenBarnyard.slnx /t:SDK\BYCoop /p:Configuration=Release /p:PlatformToolset=v143 /m
+      run: msbuild ./OpenBarnyard.slnx "/t:SDK\BYModCore;SDK\BYCoop" /p:Configuration=Release /p:PlatformToolset=v143 /m
 
     - name: Collect
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force out | Out-Null
-        Get-ChildItem bin -Recurse -Include BYCoop.dll,BYModCore.dll,BYCoop.pdb | Copy-Item -Destination out
+        New-Item -ItemType Directory -Force out\Mods | Out-Null
+        Get-ChildItem bin -Recurse -Include BYModCore.dll | Copy-Item -Destination out
+        Get-ChildItem bin -Recurse -Include BYCoop.dll,BYCoop.pdb | Copy-Item -Destination out\Mods
+        Copy-Item SDK\BYCoop\Launcher\BYCoopLauncher.exe out
+        Get-ChildItem -Recurse out
         Get-ChildItem out
 
     - uses: actions/upload-artifact@v4
