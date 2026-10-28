@@ -76,6 +76,20 @@ TBOOL AModLoaderTask::OnCreate()
 
 void RawLog( const char* a_szFormat, ... );
 
+// Logs first-chance exceptions raised while a mod DLL initialises (the loader swallows them as error 1114)
+static LONG CALLBACK ModInitExceptionLogger( PEXCEPTION_POINTERS a_pInfo )
+{
+	void*   pAddr = a_pInfo->ExceptionRecord->ExceptionAddress;
+	HMODULE hMod  = NULL;
+	char    szMod[ MAX_PATH ] = "?";
+	if ( GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)pAddr, &hMod ) )
+		GetModuleFileNameA( hMod, szMod, MAX_PATH );
+	RawLog( "  exception %08lx at %p (%s+%lx) info %p %p", a_pInfo->ExceptionRecord->ExceptionCode, pAddr, szMod,
+	        (unsigned long)( (char*)pAddr - (char*)hMod ),
+	        (void*)a_pInfo->ExceptionRecord->ExceptionInformation[ 0 ], (void*)a_pInfo->ExceptionRecord->ExceptionInformation[ 1 ] );
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void AModLoaderTask::LoadMods()
 {
 	TINFO( "Loading mods...\n" );
@@ -91,7 +105,9 @@ void AModLoaderTask::LoadMods()
 			char dllPath[ MAX_PATH ];
 			TStringManager::StringUnicodeToChar( dllPath, entry.path().native().c_str(), -1 );
 
+			PVOID   hVEH                = AddVectoredExceptionHandler( 1, ModInitExceptionLogger );
 			HMODULE hModule             = LoadLibraryW( dll );
+			RemoveVectoredExceptionHandler( hVEH );
 			RawLog( "LoadLibrary %s -> %p (error %lu)", dllPath, hModule, hModule ? 0ul : GetLastError() );
 			auto    fnCreateModInstance = TREINTERPRETCAST( t_CreateModInstance, GetProcAddress( hModule, "CreateModInstance" ) );
 			auto    fnGetVersion        = TREINTERPRETCAST( t_GetModVersion, GetProcAddress( hModule, "GetModVersion" ) );
