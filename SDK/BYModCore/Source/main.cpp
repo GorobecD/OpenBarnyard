@@ -166,6 +166,7 @@ DWORD APIENTRY DllMain( HMODULE hModule, DWORD reason, LPVOID reserved )
 
 			g_oSettings.Load();
 			g_CommandLine.Create( GetCommandLineA() );
+			RawLog( "command line: %s | -windowed=%d -width=%s", GetCommandLineA(), g_CommandLine.HasParameter( "-windowed" ), g_CommandLine.GetParameterValue( "-width", "-" ).GetString() );
 
 			// Fix necessary regedit records missing
 			HKEY    hKey;

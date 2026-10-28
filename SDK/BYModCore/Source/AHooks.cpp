@@ -366,6 +366,10 @@ MEMBER_HOOK( 0x00662d90, AOptions, AOptions_IsResolutionCompatible, TBOOL, TINT 
 	}
 
 	TINFO( "Launching the game in %s mode\n", ( *pIsWindowed ) ? "windowed" : "fullscreen" );
+	{
+		extern void RawLog( const char*, ... );
+		RawLog( "display: %dx%d windowed=%d (param windowed=%d, screen %ldx%ld)", a_iWidth, a_iHeight, *pIsWindowed, bWindowed, windowRect.right, windowRect.bottom );
+	}
 
 	if ( *pIsWindowed == TFALSE && !bOverridenResolution )
 	{
