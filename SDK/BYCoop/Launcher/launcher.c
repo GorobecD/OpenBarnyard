@@ -25,20 +25,21 @@ int main(void) {
 	const char* args = GetCommandLineA();
 	if (*args == '"') { args = strchr(args + 1, '"'); args = args ? args + 1 : ""; }
 	else { while (*args && *args != ' ') args++; }
-	/* Defaults: windowed 1280x720. Exclusive fullscreen at native resolution failed to create a
-	   D3D8 device on a high-res display (null render interface), and windowed lets several copies
-	   run side by side for testing. Pass -fullscreen or -width/-height to override. */
+	/* Default: fullscreen at the desktop resolution. "-windowed" gives a 1280x720 window
+	   (used to run several copies side by side for testing). */
+	int windowed = strstr(args, "-windowed") != NULL;
+	DWORD w = windowed ? 1280 : (DWORD)GetSystemMetrics(SM_CXSCREEN);
+	DWORD h = windowed ? 720 : (DWORD)GetSystemMetrics(SM_CYSCREEN);
 	char extra[128] = "";
-	if (!strstr(args, "-fullscreen") && !strstr(args, "-windowed")) strcat(extra, " -windowed");
-	if (!strstr(args, "-width")) strcat(extra, " -width 1280 -height 720");
+	if (!windowed && !strstr(args, "-fullscreen")) strcat(extra, " -fullscreen");
+	if (!strstr(args, "-width")) snprintf(extra + strlen(extra), sizeof extra - strlen(extra), " -width %lu -height %lu", w, h);
 	snprintf(cmd, sizeof cmd, "\"%s\"%s%s", exe, args, extra);
 
-	/* The command-line switches above are not always seen by ModCore, so also set the game's own
-	   display settings (HKCU\\Software\\THQ\\Barnyard, read by AOptions) unless -fullscreen. */
-	if (!strstr(args, "-fullscreen")) {
+	/* Also store the mode in the game's own display settings (HKCU\\Software\\THQ\\Barnyard, read by AOptions). */
+	{
 		HKEY k;
 		if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\THQ\\Barnyard", 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
-			DWORD w = 1280, h = 720, win = 1;
+			DWORD win = windowed;
 			RegSetValueExA(k, "Width", 0, REG_DWORD, (const BYTE*)&w, sizeof w);
 			RegSetValueExA(k, "Height", 0, REG_DWORD, (const BYTE*)&h, sizeof h);
 			RegSetValueExA(k, "RealForcedWindowed", 0, REG_DWORD, (const BYTE*)&win, sizeof win);

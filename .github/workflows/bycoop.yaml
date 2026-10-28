@@ -2,7 +2,7 @@ name: BYCoop
 
 on:
   push:
-    paths: [ "SDK/BYCoop/**", "SDK/BYModCore/**", "SDK/BYardSDK/**", ".github/workflows/bycoop.yaml" ]
+    paths: [ "premake5.lua", "Toshi/**", "SDK/BYCoop/**", "SDK/BYModCore/**", "SDK/BYardSDK/**", ".github/workflows/bycoop.yaml" ]
   workflow_dispatch:
 
 permissions:
