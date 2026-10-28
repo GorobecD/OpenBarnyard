@@ -13,6 +13,7 @@ static int fail(const char* m) {
 }
 
 int main(void) {
+	SetProcessDPIAware(); /* real pixels for SM_CXSCREEN under display scaling */
 	char dir[MAX_PATH], exe[MAX_PATH], dll[MAX_PATH], cmd[2048];
 	GetModuleFileNameA(NULL, dir, MAX_PATH);
 	*strrchr(dir, '\\') = 0;
