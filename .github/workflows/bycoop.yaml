@@ -44,10 +44,13 @@ jobs:
     - name: Build BYCoop (Release)
       shell: pwsh
       run: |
-        msbuild ./OpenBarnyard.slnx "/t:SDK\BYModCore;SDK\BYCoop" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m /nologo /v:m /clp:ErrorsOnly | Tee-Object build.log
+        msbuild ./OpenBarnyard.slnx "/t:SDK\BYModCore;SDK\BYCoop" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m /nologo /v:m "/flp:Verbosity=normal;LogFile=build.log"
         $code = $LASTEXITCODE
-        # surface errors as annotations (readable through the API)
-        Get-Content build.log | Select-String -Pattern "error" | Select-Object -First 40 | ForEach-Object { Write-Output ("::error::" + ($_.Line -replace '^.*\\SDK\\','SDK\\')) }
+        if ($code -ne 0) {
+          $err = Select-String -Path build.log -Pattern "error|fatal" | Select-Object -First 40
+          if (-not $err) { $err = Get-Content build.log -Tail 40 }
+          $err | ForEach-Object { Write-Output ("::error::" + "$_".Substring(0, [Math]::Min(900, "$_".Length))) }
+        }
         exit $code
 
     - name: Collect
