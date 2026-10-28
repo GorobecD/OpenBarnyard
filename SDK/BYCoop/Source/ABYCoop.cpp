@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "Net/Session.h"
 #include "MainMenuButton.h"
+#include "DevTools.h"
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -102,6 +103,7 @@ public:
 		GetPrivateProfileStringA( "coop", "mode", "off", szMode, sizeof( szMode ), szIni );
 		GetPrivateProfileStringA( "coop", "join", "", szJoin, sizeof( szJoin ), szIni );
 		int iUdpPort = GetPrivateProfileIntA( "coop", "udp_port", 0, szIni );
+		GetPrivateProfileStringA( "dev", "spawn", "", m_szDevSpawn, sizeof( m_szDevSpawn ), szIni );
 
 		if ( const char* p = strstr( cl, "-coop-name " ) ) sscanf( p + 11, "%23s", m_look.name );
 		if ( const char* p = strstr( cl, "-coop-udp " ) ) iUdpPort = atoi( p + 10 );
@@ -193,6 +195,7 @@ public:
 
 	TBOOL OnUpdate( TFLOAT ) override
 	{
+		DevTools::Update( Log, m_szDevSpawn );
 		if ( !m_ready ) return TTRUE;
 		coop::Pose pose;
 		if ( ReadLocalPose( pose ) )
@@ -286,6 +289,7 @@ private:
 	std::mutex                     m_oNetMutex;
 	std::atomic<bool>              m_bRunNet{ false };
 	bool                           m_bOpenInvite = false;
+	char                           m_szDevSpawn[ 64 ] = {};
 	coop::Appearance               m_look;
 	bool                           m_ready             = false;
 	char                           m_joinTarget[ 64 ] = {};
