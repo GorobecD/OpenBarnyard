@@ -79,6 +79,7 @@ public:
 	TBOOL OnLoad() override
 	{
 		Log( "BYCoop OnLoad" );
+		Log( std::string( "command line: " ) + GetCommandLineA() );
 		// -coop-udp <port> : local test mode (several copies on one PC). Default: Steam.
 		const char* cl   = GetCommandLineA();
 		const char* udp  = strstr( cl, "-coop-udp " );
