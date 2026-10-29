@@ -9,7 +9,7 @@
 namespace coop
 {
 
-constexpr uint32_t PROTOCOL_VERSION = 1;
+constexpr uint32_t PROTOCOL_VERSION = 2; // 2: Pose::levelHash = terrain id + 1
 constexpr int      MAX_PLAYERS      = 4;
 
 // What the player picked in the character creator (AFrontEndCharacterSelectState).

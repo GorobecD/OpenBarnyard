@@ -58,6 +58,48 @@ void SetMeasuredSpeed( void* a_pSteer, TFLOAT a_fSpeed )
 	( *(t_SetF*)( *(char**)pKin + VT_KIN_BLENDMEASURED ) )( pKin, a_fSpeed );
 }
 
+std::map<int, double>& Failed()
+{
+	static std::map<int, double>* s_p = new std::map<int, double>();
+	return *s_p;
+}
+double g_fLevelSince = 0;
+constexpr TUINT OFF_UNIT_ANIMOBJ = 0x94; // AAnimatedUnit::m_pAnimatableObject
+
+// SEH guards: a crash inside retail spawning must not take the game down (no C++ objects here)
+void* SafeSpawn( void* a_pMgr, const TVector4& a_rPos, const TVector4& a_rDir )
+{
+	__try
+	{
+		return CALL_THIS( 0x00411970, void*, void*, a_pMgr, const char*, "player", const TVector4&, a_rPos, const TVector4&, a_rDir ); // SpawnUnit
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return nullptr;
+	}
+}
+void SafeDestroy( void* a_pMgr, void* a_pUnit )
+{
+	__try
+	{
+		CALL_THIS( 0x00410fe0, void*, void, a_pMgr, void*, a_pUnit ); // AUnitManager::DestroyUnit
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+bool SafeApplyMaterial( void* a_pUnit, int a_iSkin )
+{
+	__try
+	{
+		return CALL_THIS( 0x00415b10, void*, TBOOL, a_pUnit, TINT, a_iSkin, TBOOL, TTRUE ) != 0; // AAnimatedUnit::ApplyMaterial
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
 TVector4 PoseDir( const coop::Pose& p ) { return TVector4( std::sin( p.yaw ), 0.0f, std::cos( p.yaw ), 0.0f ); }
 } // namespace
 
@@ -68,7 +110,11 @@ bool RemotePuppets::IsPuppet( void* a_pUnit )
 	return false;
 }
 
-void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::RemotePlayer>& a_rRemotes, double a_fNow, double a_fDelay,
+bool RemotePuppets::HasPuppet( int a_iSlot ) { return g_oPuppets.count( a_iSlot ) != 0; }
+
+uint32_t RemotePuppets::CurrentLevel() { return (uint32_t)*(TINT*)0x00772800 + 1; } // ATerrainInterface::ms_eCurrentLevel
+
+void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const std::map<int, coop::RemotePlayer>& a_rRemotes, double a_fNow, double a_fDelay,
                             const std::function<void( const std::string& )>& a_fnLog )
 {
 	void* pMgr = *ppUnitManager;
@@ -78,7 +124,9 @@ void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::Remote
 	{
 		if ( !g_oPuppets.empty() ) a_fnLog( "puppets: level changed, dropping " + std::to_string( g_oPuppets.size() ) );
 		g_oPuppets.clear();
-		g_pLevelUnit = a_pLocalUnit;
+		Failed().clear();
+		g_pLevelUnit  = a_pLocalUnit;
+		g_fLevelSince = a_fNow;
 	}
 	if ( !a_pLocalUnit || !pMgr ) return;
 
@@ -87,7 +135,7 @@ void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::Remote
 	{
 		if ( !a_rRemotes.count( it->first ) )
 		{
-			CALL_THIS( 0x00410fe0, void*, void, pMgr, void*, it->second.pUnit ); // AUnitManager::DestroyUnit
+			SafeDestroy( pMgr, it->second.pUnit );
 			a_fnLog( std::string( "puppet removed: " ) + it->second.szName );
 			it = g_oPuppets.erase( it );
 		}
@@ -103,31 +151,45 @@ void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::Remote
 		TVector4   vDir = PoseDir( p );
 
 		auto it = g_oPuppets.find( slot );
+		// remote went to another map (or we did): its cow must not stand in ours
+		if ( p.levelHash != a_uiLocalLevel )
+		{
+			if ( it != g_oPuppets.end() )
+			{
+				SafeDestroy( pMgr, it->second.pUnit );
+				a_fnLog( std::string( "puppet hidden (other map): " ) + it->second.szName );
+				g_oPuppets.erase( it );
+			}
+			continue;
+		}
 		if ( it == g_oPuppets.end() )
 		{
-			// Appearance experiment: the cow's breed (costume 0..6) and gender live on the player profile
-			// manager (0x007b493c +0x48 / +0x10, as BYSpeedrunHelper uses them). Switch them to the remote
-			// player's choice only while its unit is created, then restore ours.
+			// wait until our own level has settled (the friend crashed spawning right after the creator)
+			if ( a_fNow - g_fLevelSince < 3.0 ) continue;
+			auto f = Failed().find( slot );
+			if ( f != Failed().end() && a_fNow - f->second < 30.0 ) continue;
+
+			// The "player" unit builds its model from the profile's gender, and only the local
+			// gender's model is loaded in a level: spawning the other gender crashed in retail
+			// AAnimatedUnit::GetModelInstance (null animatable object). So spawn with our gender
+			// and only change the hide (costume = material on the same model) afterwards.
+			void* pUnit = SafeSpawn( pMgr, vPos, vDir );
+			if ( !pUnit || !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) )
+			{
+				Failed()[ slot ] = a_fNow;
+				if ( pUnit ) SafeDestroy( pMgr, pUnit );
+				a_fnLog( std::string( "puppet spawn failed: " ) + rp.look.name );
+				continue;
+			}
 			char* pProfiles = *(char**)0x007b493c;
-			TINT  iOurCostume = 0, iOurGender = 0;
-			if ( pProfiles )
-			{
-				iOurCostume                    = *(TINT*)( pProfiles + 0x48 );
-				iOurGender                     = *(TINT*)( pProfiles + 0x10 );
-				*(TINT*)( pProfiles + 0x48 )   = rp.look.hide;
-				*(TINT*)( pProfiles + 0x10 )   = rp.look.gender;
-			}
-			void* pUnit = CALL_THIS( 0x00411970, void*, void*, pMgr, const char*, "player", const TVector4&, vPos, const TVector4&, vDir ); // SpawnUnit
-			if ( pProfiles )
-			{
-				*(TINT*)( pProfiles + 0x48 ) = iOurCostume;
-				*(TINT*)( pProfiles + 0x10 ) = iOurGender;
-			}
-			if ( !pUnit ) continue;
+			TINT  iOurCostume = pProfiles ? *(TINT*)( pProfiles + 0x48 ) : -1;
+			if ( rp.look.hide != iOurCostume && rp.look.hide <= 6 && !SafeApplyMaterial( pUnit, rp.look.hide ) )
+				a_fnLog( "puppet hide not applied" );
 			Puppet& pp = g_oPuppets[ slot ];
 			pp.pUnit   = pUnit;
 			strncpy( pp.szName, rp.look.name, sizeof( pp.szName ) - 1 );
-			a_fnLog( std::string( "puppet spawned: " ) + pp.szName );
+			a_fnLog( std::string( "puppet spawned: " ) + pp.szName + " hide " + std::to_string( rp.look.hide ) +
+			         ( rp.look.gender != ( pProfiles ? *(TINT*)( pProfiles + 0x10 ) : 0 ) ? " (other gender: shown as ours)" : "" ) );
 			continue;
 		}
 

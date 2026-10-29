@@ -219,6 +219,8 @@ public:
 		if ( !m_ready ) return TTRUE;
 		coop::Pose pose;
 		const bool bInLevel = ReadLocalPose( pose );
+		pose.levelHash      = bInLevel ? RemotePuppets::CurrentLevel() : 0;
+		LogEscape();
 		// our breed/gender from the character creator (player profile manager, see RemotePuppets.cpp)
 		if ( char* pProfiles = *(char**)0x007b493c )
 		{
@@ -235,12 +237,29 @@ public:
 		}
 		{
 			std::lock_guard<std::mutex> lock( m_oNetMutex );
-			if ( bInLevel ) m_session->SetLocalPose( pose );
+			m_session->SetLocalPose( pose ); // levelHash 0 outside a level hides our cow on the others
 			APlayerManager* pm    = APlayerManager::GetSingleton();
 			void*           pLocal = bInLevel && pm ? (void*)pm->GetPlayer( 0 ) : TNULL;
-			RemotePuppets::Update( pLocal, m_session->Remotes(), NowSeconds(), m_session->interpDelay, Log );
+			RemotePuppets::Update( pLocal, pose.levelHash, m_session->Remotes(), NowSeconds(), m_session->interpDelay, Log );
 		}
 		return TTRUE;
+	}
+
+	// Diagnostics for "cutscene can't be skipped": which game state gets the Esc/Enter press
+	void LogEscape()
+	{
+		static bool s_bEsc = false, s_bRet = false;
+		const bool  bEsc = ( GetAsyncKeyState( VK_ESCAPE ) & 0x8000 ) != 0;
+		const bool  bRet = ( GetAsyncKeyState( VK_RETURN ) & 0x8000 ) != 0;
+		if ( ( bEsc && !s_bEsc ) || ( bRet && !s_bRet ) )
+		{
+			AGameStateController* pCtrl  = AGameStateController::GetSingleton();
+			AGameState*           pState = pCtrl ? pCtrl->GetCurrentState() : TNULL;
+			Log( std::string( bEsc && !s_bEsc ? "Esc" : "Enter" ) + " in state " + ( pState ? pState->GetClass()->GetName() : "?" ) +
+			     " imgui=" + ( g_pImGui && g_pImGui->IsEnabled() ? "on" : "off" ) );
+		}
+		s_bEsc = bEsc;
+		s_bRet = bRet;
 	}
 
 	TBOOL HasSettingsUI() override { return TTRUE; }
@@ -264,7 +283,7 @@ public:
 
 		for ( auto& [ slot, rp ] : m_session->Remotes() )
 		{
-			if ( !rp.hasPose ) continue;
+			if ( !rp.hasPose || !RemotePuppets::HasPuppet( slot ) ) continue; // only over a cow that is really there
 			coop::Pose p = rp.Sample( NowSeconds(), m_session->interpDelay );
 			TFLOAT     x = p.pos[ 0 ] - vP.x, y = p.pos[ 1 ] - 2.2f - vP.y, z = p.pos[ 2 ] - vP.z; // 2.2 above the cow
 			TFLOAT     cz = x * vF.x + y * vF.y + z * vF.z;
