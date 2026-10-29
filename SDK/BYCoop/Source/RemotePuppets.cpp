@@ -29,6 +29,7 @@ struct Puppet
 	void* pUnit = nullptr;
 	char  szName[ 24 ] = {};
 	int   iGender = -1, iCostume = -1; // look the unit was created with
+	bool  bVisible = true;
 };
 // by slot. Allocated on first use: a global std::map allocates in its constructor, which runs
 // before TMemory is initialised and made LoadLibrary fail (error 1114) once already.
@@ -118,6 +119,29 @@ bool SafeApplyMaterial( void* a_pUnit, int a_iSkin )
 	}
 }
 
+// AAnimatedUnit::SetVisible 0x415ac0. Puppets are never destroyed inside a level: the game keeps
+// pointers to units in its interaction system and crashed later (AAttachedUnitRequirement::Evaluate on
+// a destroyed cow with no animatable object). A puppet that is not needed is hidden instead.
+void SafeSetVisible( void* a_pUnit, bool a_bVisible )
+{
+	__try
+	{
+		CALL_THIS( 0x00415ac0, void*, void, a_pUnit, TBOOL, a_bVisible ? TTRUE : TFALSE );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+
+// The hide is a texture of the model's material, and a model is shared by every cow of that gender:
+// retexturing a puppet of OUR gender would retexture our own cow too. So only cows of the other
+// gender get their hide (that model is used by puppets only).
+void ApplyHide( void* a_pUnit, int a_iGender, int a_iCostume, int a_iOwnGender, const std::function<void( const std::string& )>& a_fnLog )
+{
+	if ( a_iGender == a_iOwnGender ) return;
+	if ( !SafeApplyMaterial( a_pUnit, a_iCostume ) ) a_fnLog( "puppet hide not applied" );
+}
+
 TVector4 PoseDir( const coop::Pose& p ) { return TVector4( std::sin( p.yaw ), 0.0f, std::cos( p.yaw ), 0.0f ); }
 } // namespace
 
@@ -128,7 +152,11 @@ bool RemotePuppets::IsPuppet( void* a_pUnit )
 	return false;
 }
 
-bool RemotePuppets::HasPuppet( int a_iSlot ) { return g_oPuppets.count( a_iSlot ) != 0; }
+bool RemotePuppets::HasPuppet( int a_iSlot )
+{
+	auto it = g_oPuppets.find( a_iSlot );
+	return it != g_oPuppets.end() && it->second.bVisible;
+}
 
 uint32_t RemotePuppets::CurrentLevel() { return (uint32_t)*(TINT*)0x00772800 + 1; } // ATerrainInterface::ms_eCurrentLevel
 
@@ -148,18 +176,17 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 	}
 	if ( !a_pLocalUnit || !pMgr ) return;
 
-	// Remove puppets of players who left
-	for ( auto it = g_oPuppets.begin(); it != g_oPuppets.end(); )
-	{
-		if ( !a_rRemotes.count( it->first ) )
+	// Players who left: hide their cows (see SafeSetVisible)
+	for ( auto& [ slot, pp ] : g_oPuppets )
+		if ( !a_rRemotes.count( slot ) && pp.bVisible )
 		{
-			SafeDestroy( pMgr, it->second.pUnit );
-			a_fnLog( std::string( "puppet removed: " ) + it->second.szName );
-			it = g_oPuppets.erase( it );
+			SafeSetVisible( pp.pUnit, false );
+			pp.bVisible = false;
+			a_fnLog( std::string( "puppet hidden (left): " ) + pp.szName );
 		}
-		else
-			++it;
-	}
+
+	char* pProfiles  = *(char**)0x007b493c;
+	const int iOwnG  = pProfiles ? *(TINT*)( pProfiles + 0x10 ) : -1;
 
 	for ( auto& [ slot, rp ] : a_rRemotes )
 	{
@@ -172,11 +199,11 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		// remote went to another map (or we did): its cow must not stand in ours
 		if ( p.levelHash != a_uiLocalLevel )
 		{
-			if ( it != g_oPuppets.end() )
+			if ( it != g_oPuppets.end() && it->second.bVisible )
 			{
-				SafeDestroy( pMgr, it->second.pUnit );
+				SafeSetVisible( it->second.pUnit, false );
+				it->second.bVisible = false;
 				a_fnLog( std::string( "puppet hidden (other map): " ) + it->second.szName );
-				g_oPuppets.erase( it );
 			}
 			continue;
 		}
@@ -188,7 +215,8 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			if ( f != Failed().end() && a_fNow - f->second < 30.0 ) continue;
 
 			// models/hides of other players are loaded by PlayerAssets (retail loads only ours)
-			if ( !PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ) ) continue;
+			if ( rp.look.gender < 0 || rp.look.gender > 1 ) continue;
+			if ( rp.look.gender != iOwnG && !PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ) ) continue;
 			UnitTransform oT;
 			oT.vPos        = vPos;
 			oT.vDir        = vDir;
@@ -197,11 +225,11 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			if ( !pUnit || !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) )
 			{
 				Failed()[ slot ] = a_fNow;
-				if ( pUnit ) SafeDestroy( pMgr, pUnit );
+				if ( pUnit ) SafeDestroy( pMgr, pUnit ); // same frame, nothing refers to it yet
 				a_fnLog( std::string( "puppet spawn failed: " ) + rp.look.name );
 				continue;
 			}
-			if ( !SafeApplyMaterial( pUnit, rp.look.hide ) ) a_fnLog( "puppet hide not applied" );
+			ApplyHide( pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog );
 			Puppet& pp  = g_oPuppets[ slot ];
 			pp.pUnit    = pUnit;
 			pp.iGender  = rp.look.gender;
@@ -210,13 +238,18 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			a_fnLog( std::string( "puppet spawned: " ) + pp.szName + ( pp.iGender ? " female" : " male" ) + " hide " + std::to_string( pp.iCostume ) );
 			continue;
 		}
-		// the player changed the cow in the creator: build it again
-		if ( it->second.iGender != rp.look.gender || it->second.iCostume != rp.look.hide )
+		Puppet& pp = it->second;
+		if ( !pp.bVisible )
 		{
-			SafeDestroy( pMgr, it->second.pUnit );
-			a_fnLog( std::string( "puppet look changed: " ) + it->second.szName );
-			g_oPuppets.erase( it );
-			continue;
+			SafeSetVisible( pp.pUnit, true );
+			pp.bVisible = true;
+			a_fnLog( std::string( "puppet shown: " ) + pp.szName );
+		}
+		// the player changed the hide: retexture (a gender change needs another model: next level)
+		if ( pp.iCostume != rp.look.hide && pp.iGender == rp.look.gender )
+		{
+			ApplyHide( pp.pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog );
+			pp.iCostume = rp.look.hide;
 		}
 
 		void* pSteer = Steer( it->second.pUnit );

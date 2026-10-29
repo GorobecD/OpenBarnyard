@@ -93,6 +93,7 @@ void LoadWanted()
 	{
 		const int g = g_aWantG[ i ], c = g_aWantC[ i ];
 		if ( g < 0 || g > 1 || c < 0 || c >= NUM_COSTUMES || PlayerAssets::IsLoaded( g, c ) ) continue;
+		if ( g == g_iOwnGender ) continue; // same model as ours: its hide can't differ (shared material)
 		bool bOk;
 		if ( g != g_iOwnGender && g_iOtherCostume < 0 )
 		{
