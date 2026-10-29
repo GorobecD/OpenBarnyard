@@ -6,6 +6,7 @@
 #include "MainMenuButton.h"
 #include "DevTools.h"
 #include "RemotePuppets.h"
+#include "PlayerAssets.h"
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -154,6 +155,8 @@ public:
 		if ( m_ready && !_stricmp( szMode, "host" ) ) m_session->Host();
 		else if ( m_ready && !_stricmp( szMode, "join" ) && *szJoin ) m_session->Join( szJoin );
 
+		PlayerAssets::Install( Log );
+
 		// MULTIPLAYER button in the main menu (game-styled popup instead of the Alt+` overlay)
 		MainMenuButton::Install(
 		    [ this ]( bool a_bRu, std::wstring& a_rTitle, std::wstring& a_rMsg ) {
@@ -238,6 +241,12 @@ public:
 		{
 			std::lock_guard<std::mutex> lock( m_oNetMutex );
 			m_session->SetLocalPose( pose ); // levelHash 0 outside a level hides our cow on the others
+			// assets of the other players' cows (gender model + hide), loaded on top of ours
+			int aG[ coop::MAX_PLAYERS ], aC[ coop::MAX_PLAYERS ], n = 0;
+			for ( auto& [ slot, rp ] : m_session->Remotes() )
+				if ( n < coop::MAX_PLAYERS ) { aG[ n ] = rp.look.gender; aC[ n ] = rp.look.hide; n++; }
+			PlayerAssets::SetWanted( aG, aC, n );
+			if ( bInLevel ) PlayerAssets::Update();
 			APlayerManager* pm    = APlayerManager::GetSingleton();
 			void*           pLocal = bInLevel && pm ? (void*)pm->GetPlayer( 0 ) : TNULL;
 			RemotePuppets::Update( pLocal, pose.levelHash, m_session->Remotes(), NowSeconds(), m_session->interpDelay, Log );

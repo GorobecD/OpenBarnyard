@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "RemotePuppets.h"
+#include "PlayerAssets.h"
 #include <BYardSDK/SDKHooks.h>
 #include <Math/TVector4.h>
 #include <cmath>
@@ -27,6 +28,7 @@ struct Puppet
 {
 	void* pUnit = nullptr;
 	char  szName[ 24 ] = {};
+	int   iGender = -1, iCostume = -1; // look the unit was created with
 };
 // by slot. Allocated on first use: a global std::map allocates in its constructor, which runs
 // before TMemory is initialised and made LoadLibrary fail (error 1114) once already.
@@ -67,11 +69,27 @@ double g_fLevelSince = 0;
 constexpr TUINT OFF_UNIT_ANIMOBJ = 0x94; // AAnimatedUnit::m_pAnimatableObject
 
 // SEH guards: a crash inside retail spawning must not take the game down (no C++ objects here)
-void* SafeSpawn( void* a_pMgr, const TVector4& a_rPos, const TVector4& a_rDir )
+// AUnitTransform (0x30 bytes, see OpenBarnyard Units/AUnitTransform.h)
+struct UnitTransform
+{
+	TVector4 vPos, vDir;
+	TINT     iUnk20 = 0, iModelIndex = -1, iUnk28 = -1;
+	TBOOL    bCreateObstruction = TTRUE;
+	char     pad[ 3 ] = {};
+};
+static_assert( sizeof( UnitTransform ) == 0x30, "AUnitTransform layout" );
+
+// AUnitManager::SpawnUnit with an explicit model: the "player" type lists the male (0) and female (1)
+// cows, as AGameLoader spawns the local one. (The plain SpawnUnit always takes model 0.)
+void* SafeSpawn( void* a_pMgr, UnitTransform* a_pTransform )
 {
 	__try
 	{
-		return CALL_THIS( 0x00411970, void*, void*, a_pMgr, const char*, "player", const TVector4&, a_rPos, const TVector4&, a_rDir ); // SpawnUnit
+		void* pType = CALL_THIS( 0x0040fee0, void*, void*, a_pMgr, const char*, "player" ); // FindUnit
+		if ( !pType ) return nullptr;
+		void* pUnit = CALL_THIS( 0x00411700, void*, void*, a_pMgr, void*, pType, UnitTransform*, a_pTransform ); // CreateUnitFromTemplate
+		if ( !pUnit ) pUnit = CALL_THIS( 0x00410d70, void*, void*, a_pMgr, void*, pType, UnitTransform*, a_pTransform ); // CreateUnitInstance
+		return pUnit;
 	}
 	__except ( EXCEPTION_EXECUTE_HANDLER )
 	{
@@ -169,11 +187,13 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			auto f = Failed().find( slot );
 			if ( f != Failed().end() && a_fNow - f->second < 30.0 ) continue;
 
-			// The "player" unit builds its model from the profile's gender, and only the local
-			// gender's model is loaded in a level: spawning the other gender crashed in retail
-			// AAnimatedUnit::GetModelInstance (null animatable object). So spawn with our gender
-			// and only change the hide (costume = material on the same model) afterwards.
-			void* pUnit = SafeSpawn( pMgr, vPos, vDir );
+			// models/hides of other players are loaded by PlayerAssets (retail loads only ours)
+			if ( !PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ) ) continue;
+			UnitTransform oT;
+			oT.vPos        = vPos;
+			oT.vDir        = vDir;
+			oT.iModelIndex = rp.look.gender;
+			void* pUnit    = SafeSpawn( pMgr, &oT );
 			if ( !pUnit || !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) )
 			{
 				Failed()[ slot ] = a_fNow;
@@ -181,15 +201,21 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 				a_fnLog( std::string( "puppet spawn failed: " ) + rp.look.name );
 				continue;
 			}
-			char* pProfiles = *(char**)0x007b493c;
-			TINT  iOurCostume = pProfiles ? *(TINT*)( pProfiles + 0x48 ) : -1;
-			if ( rp.look.hide != iOurCostume && rp.look.hide <= 6 && !SafeApplyMaterial( pUnit, rp.look.hide ) )
-				a_fnLog( "puppet hide not applied" );
-			Puppet& pp = g_oPuppets[ slot ];
-			pp.pUnit   = pUnit;
+			if ( !SafeApplyMaterial( pUnit, rp.look.hide ) ) a_fnLog( "puppet hide not applied" );
+			Puppet& pp  = g_oPuppets[ slot ];
+			pp.pUnit    = pUnit;
+			pp.iGender  = rp.look.gender;
+			pp.iCostume = rp.look.hide;
 			strncpy( pp.szName, rp.look.name, sizeof( pp.szName ) - 1 );
-			a_fnLog( std::string( "puppet spawned: " ) + pp.szName + " hide " + std::to_string( rp.look.hide ) +
-			         ( rp.look.gender != ( pProfiles ? *(TINT*)( pProfiles + 0x10 ) : 0 ) ? " (other gender: shown as ours)" : "" ) );
+			a_fnLog( std::string( "puppet spawned: " ) + pp.szName + ( pp.iGender ? " female" : " male" ) + " hide " + std::to_string( pp.iCostume ) );
+			continue;
+		}
+		// the player changed the cow in the creator: build it again
+		if ( it->second.iGender != rp.look.gender || it->second.iCostume != rp.look.hide )
+		{
+			SafeDestroy( pMgr, it->second.pUnit );
+			a_fnLog( std::string( "puppet look changed: " ) + it->second.szName );
+			g_oPuppets.erase( it );
 			continue;
 		}
 
