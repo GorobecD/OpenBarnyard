@@ -5,6 +5,7 @@
 #include "Net/Session.h"
 #include "MainMenuButton.h"
 #include "DevTools.h"
+#include "RemotePuppets.h"
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -70,7 +71,7 @@ bool ReadLocalPose( coop::Pose& out )
 	APlayerManager* pm = APlayerManager::GetSingleton();
 	if ( !pm ) return false;
 	AUnitPlayer* p = pm->GetPlayer( 0 );
-	if ( !p || !p->GetSteer() ) return false;
+	if ( !p || !p->GetSteer() || RemotePuppets::IsPuppet( p ) ) return false;
 	TVector4* pos = p->GetSteer()->GetPosition();
 	if ( !pos ) return false;
 	TVector4 vel;
@@ -79,7 +80,12 @@ bool ReadLocalPose( coop::Pose& out )
 	out.pos[ 1 ] = pos->y;
 	out.pos[ 2 ] = pos->z;
 	out.speed    = std::sqrt( vel.x * vel.x + vel.z * vel.z );
-	if ( out.speed > 0.05f ) out.yaw = std::atan2( vel.x, vel.z );
+	// facing: ASteer::GetDirection (vtable +0xb8)
+	typedef const TVector4*( __thiscall * t_GetDir )( void* );
+	void*           pSteer = p->GetSteer();
+	const TVector4* pDir   = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer );
+	if ( pDir && ( pDir->x != 0.0f || pDir->z != 0.0f ) ) out.yaw = std::atan2( pDir->x, pDir->z );
+	else if ( out.speed > 0.05f ) out.yaw = std::atan2( vel.x, vel.z );
 	return true;
 }
 } // namespace
@@ -205,10 +211,13 @@ public:
 		DevTools::Update( Log, m_szDevSpawn );
 		if ( !m_ready ) return TTRUE;
 		coop::Pose pose;
-		if ( ReadLocalPose( pose ) )
+		const bool bInLevel = ReadLocalPose( pose );
 		{
 			std::lock_guard<std::mutex> lock( m_oNetMutex );
-			m_session->SetLocalPose( pose );
+			if ( bInLevel ) m_session->SetLocalPose( pose );
+			APlayerManager* pm    = APlayerManager::GetSingleton();
+			void*           pLocal = bInLevel && pm ? (void*)pm->GetPlayer( 0 ) : TNULL;
+			RemotePuppets::Update( pLocal, m_session->Remotes(), NowSeconds(), m_session->interpDelay, Log );
 		}
 		return TTRUE;
 	}
