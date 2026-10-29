@@ -15,6 +15,11 @@ constexpr TUINT OFF_UNIT_STEER = 0x1c;
 // ASteer vtable offsets (OpenBarnyard UnitMovement/Steering/ASteer.h)
 constexpr TUINT VT_SETPOSITION  = 0x84;
 constexpr TUINT VT_SETDIRECTION = 0x8c;
+constexpr TUINT VT_GETKINEMATICS = 0x114;
+// ASteerKinematics vtable offsets: the walk/run animation follows the measured speed
+// (ASteer::GetMovementType: >0.1 walk, > max aesthetic walk speed run)
+constexpr TUINT VT_KIN_SETMEASURED   = 0x1c; // 3D kinematics
+constexpr TUINT VT_KIN_BLENDMEASURED = 0x20; // 2D/3D
 
 typedef TBOOL( __thiscall* t_SetVec )( void*, const TVector4& );
 
@@ -40,6 +45,17 @@ void SteerCall( void* a_pSteer, TUINT a_uiVt, const TVector4& a_rV )
 	if ( !a_pSteer ) return;
 	auto fn = *(t_SetVec*)( *(char**)a_pSteer + a_uiVt );
 	fn( a_pSteer, a_rV );
+}
+
+void SetMeasuredSpeed( void* a_pSteer, TFLOAT a_fSpeed )
+{
+	if ( !a_pSteer ) return;
+	typedef void*( __thiscall * t_GetKin )( void* );
+	typedef void( __thiscall * t_SetF )( void*, TFLOAT );
+	void* pKin = ( *(t_GetKin*)( *(char**)a_pSteer + VT_GETKINEMATICS ) )( a_pSteer );
+	if ( !pKin ) return;
+	( *(t_SetF*)( *(char**)pKin + VT_KIN_SETMEASURED ) )( pKin, a_fSpeed );
+	( *(t_SetF*)( *(char**)pKin + VT_KIN_BLENDMEASURED ) )( pKin, a_fSpeed );
 }
 
 TVector4 PoseDir( const coop::Pose& p ) { return TVector4( std::sin( p.yaw ), 0.0f, std::cos( p.yaw ), 0.0f ); }
@@ -89,7 +105,24 @@ void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::Remote
 		auto it = g_oPuppets.find( slot );
 		if ( it == g_oPuppets.end() )
 		{
+			// Appearance experiment: the cow's breed (costume 0..6) and gender live on the player profile
+			// manager (0x007b493c +0x48 / +0x10, as BYSpeedrunHelper uses them). Switch them to the remote
+			// player's choice only while its unit is created, then restore ours.
+			char* pProfiles = *(char**)0x007b493c;
+			TINT  iOurCostume = 0, iOurGender = 0;
+			if ( pProfiles )
+			{
+				iOurCostume                    = *(TINT*)( pProfiles + 0x48 );
+				iOurGender                     = *(TINT*)( pProfiles + 0x10 );
+				*(TINT*)( pProfiles + 0x48 )   = rp.look.hide;
+				*(TINT*)( pProfiles + 0x10 )   = rp.look.gender;
+			}
 			void* pUnit = CALL_THIS( 0x00411970, void*, void*, pMgr, const char*, "player", const TVector4&, vPos, const TVector4&, vDir ); // SpawnUnit
+			if ( pProfiles )
+			{
+				*(TINT*)( pProfiles + 0x48 ) = iOurCostume;
+				*(TINT*)( pProfiles + 0x10 ) = iOurGender;
+			}
 			if ( !pUnit ) continue;
 			Puppet& pp = g_oPuppets[ slot ];
 			pp.pUnit   = pUnit;
@@ -101,5 +134,6 @@ void RemotePuppets::Update( void* a_pLocalUnit, const std::map<int, coop::Remote
 		void* pSteer = Steer( it->second.pUnit );
 		SteerCall( pSteer, VT_SETPOSITION, vPos );
 		SteerCall( pSteer, VT_SETDIRECTION, vDir );
+		SetMeasuredSpeed( pSteer, p.speed );
 	}
 }

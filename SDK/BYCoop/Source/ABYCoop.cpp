@@ -12,6 +12,7 @@
 #include <AHooks.h>
 #include <HookHelpers.h>
 #include <BYardSDK/APlayerManager.h>
+#include <BYardSDK/ACamera.h>
 #include <BYardSDK/AGameStateController.h>
 #include <Toshi/THPTimer.h>
 #include <ToshiTools/T2CommandLine.h>
@@ -80,6 +81,12 @@ bool ReadLocalPose( coop::Pose& out )
 	out.pos[ 1 ] = pos->y;
 	out.pos[ 2 ] = pos->z;
 	out.speed    = std::sqrt( vel.x * vel.x + vel.z * vel.z );
+	{
+		// what the animation uses: ASteer::GetMeasuredSpeed (vtable +0xd4)
+		typedef TFLOAT( __thiscall * t_GetF )( void* );
+		void* pS  = p->GetSteer();
+		out.speed = ( *(t_GetF*)( *(char**)pS + 0xd4 ) )( pS );
+	}
 	// facing: ASteer::GetDirection (vtable +0xb8)
 	typedef const TVector4*( __thiscall * t_GetDir )( void* );
 	void*           pSteer = p->GetSteer();
@@ -212,6 +219,20 @@ public:
 		if ( !m_ready ) return TTRUE;
 		coop::Pose pose;
 		const bool bInLevel = ReadLocalPose( pose );
+		// our breed/gender from the character creator (player profile manager, see RemotePuppets.cpp)
+		if ( char* pProfiles = *(char**)0x007b493c )
+		{
+			coop::Appearance look = m_look;
+			look.hide             = (uint8_t)*(TINT*)( pProfiles + 0x48 );
+			look.gender           = (uint8_t)*(TINT*)( pProfiles + 0x10 );
+			if ( look.hide != m_look.hide || look.gender != m_look.gender )
+			{
+				m_look = look;
+				std::lock_guard<std::mutex> lock( m_oNetMutex );
+				m_session->SetLocalAppearance( m_look );
+				Log( "appearance: costume " + std::to_string( look.hide ) + " gender " + std::to_string( look.gender ) );
+			}
+		}
 		{
 			std::lock_guard<std::mutex> lock( m_oNetMutex );
 			if ( bInLevel ) m_session->SetLocalPose( pose );
@@ -224,6 +245,38 @@ public:
 
 	TBOOL HasSettingsUI() override { return TTRUE; }
 	TBOOL IsOverlayVisible() override { return TTRUE; }
+
+	// Names above the other players' cows: world -> screen with the current ACamera
+	// (matrix rows: right, down, forward, position; the world is Y-down). TODO verify FOV axis in game.
+	void DrawNameTags()
+	{
+		ACameraManager* pCamMgr = ACameraManager::GetSingleton();
+		ACamera*        pCam    = pCamMgr ? pCamMgr->GetCurrentCamera() : TNULL;
+		if ( !pCam ) return;
+		const TMatrix44& m  = pCam->m_Matrix;
+		const TVector4&  vR = m.AsBasisVector4( BASISVECTOR_RIGHT );
+		const TVector4&  vD = m.AsBasisVector4( BASISVECTOR_UP );
+		const TVector4&  vF = m.AsBasisVector4( BASISVECTOR_FORWARD );
+		const TVector4&  vP = m.AsBasisVector4( BASISVECTOR_TRANSLATION );
+		ImVec2           sz = ImGui::GetIO().DisplaySize;
+		TFLOAT           f  = ( sz.y * 0.5f ) / std::tan( ( pCam->m_fFOV > 0.01f ? pCam->m_fFOV : 1.0f ) * 0.5f );
+		ImDrawList*      dl = ImGui::GetForegroundDrawList();
+
+		for ( auto& [ slot, rp ] : m_session->Remotes() )
+		{
+			if ( !rp.hasPose ) continue;
+			coop::Pose p = rp.Sample( NowSeconds(), m_session->interpDelay );
+			TFLOAT     x = p.pos[ 0 ] - vP.x, y = p.pos[ 1 ] - 2.2f - vP.y, z = p.pos[ 2 ] - vP.z; // 2.2 above the cow
+			TFLOAT     cz = x * vF.x + y * vF.y + z * vF.z;
+			if ( cz < 0.5f || cz > 80.0f ) continue;
+			TFLOAT sx = sz.x * 0.5f + ( x * vR.x + y * vR.y + z * vR.z ) / cz * f;
+			TFLOAT sy = sz.y * 0.5f + ( x * vD.x + y * vD.y + z * vD.z ) / cz * f;
+			ImVec2 ts = ImGui::CalcTextSize( rp.look.name );
+			ImVec2 at( sx - ts.x * 0.5f, sy - ts.y );
+			dl->AddRectFilled( ImVec2( at.x - 6, at.y - 3 ), ImVec2( at.x + ts.x + 6, at.y + ts.y + 3 ), IM_COL32( 0, 0, 0, 120 ), 6.0f );
+			dl->AddText( at, IM_COL32( 255, 200, 0, 255 ), rp.look.name );
+		}
+	}
 
 	void DrawInviteWindow()
 	{
@@ -266,6 +319,7 @@ public:
 	{
 		std::lock_guard<std::mutex> lock( m_oNetMutex );
 		DrawInviteWindow();
+		if ( m_ready ) DrawNameTags();
 		ImGui::SetNextWindowPos( ImVec2( 8, 8 ) );
 		ImGui::SetNextWindowBgAlpha( 0.4f );
 		ImGui::Begin( "##bycoop_status", TNULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav );
