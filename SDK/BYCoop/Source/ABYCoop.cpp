@@ -264,8 +264,16 @@ public:
 		{
 			AGameStateController* pCtrl  = AGameStateController::GetSingleton();
 			AGameState*           pState = pCtrl ? pCtrl->GetCurrentState() : TNULL;
+			std::string szExtra;
+			if ( pState && !strcmp( pState->GetClass()->GetName(), "ASSeqState" ) )
+			{
+				// ASSeqState::ProcessInput skips on Esc when m_fTime >= 1 && m_bCanSkip (see OpenBarnyard)
+				char sz[ 96 ];
+				snprintf( sz, sizeof( sz ), " time=%.1f canskip=%d skipped=%d", *(TFLOAT*)( (char*)pState + 0x1e4 ), *(TBOOL*)( (char*)pState + 0x1e9 ), *(TBOOL*)0x00781ba4 );
+				szExtra = sz;
+			}
 			Log( std::string( bEsc && !s_bEsc ? "Esc" : "Enter" ) + " in state " + ( pState ? pState->GetClass()->GetName() : "?" ) +
-			     " imgui=" + ( g_pImGui && g_pImGui->IsEnabled() ? "on" : "off" ) );
+			     " imgui=" + ( g_pImGui && g_pImGui->IsEnabled() ? "on" : "off" ) + szExtra );
 		}
 		s_bEsc = bEsc;
 		s_bRet = bRet;
