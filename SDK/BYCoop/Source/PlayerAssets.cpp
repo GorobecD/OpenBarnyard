@@ -91,11 +91,11 @@ bool ReplayAs( t_PlayerChar a_pfn, const void* a_pProp, int a_iGender, int a_iCo
 // level's property tree is only valid during loading (a runtime replay of the loader crashed).
 void LoadWanted()
 {
-	if ( !g_pProp || g_bFailed || g_iOtherCostume < 0 ) return;
+	if ( !g_pProp || g_bFailed ) return;
 	for ( int i = 0; i < g_iWant; i++ )
 	{
 		const int g = g_aWantG[ i ], c = g_aWantC[ i ];
-		if ( g != 1 - g_iOwnGender || c < 0 || c >= NUM_COSTUMES || PlayerAssets::IsLoaded( g, c ) ) continue;
+		if ( g < 0 || g > 1 || c < 0 || c >= NUM_COSTUMES || PlayerAssets::IsLoaded( g, c ) ) continue; // (same gender: puppets get a model copy)
 		const bool bOk = Matlib( g, c, true );
 		if ( bOk ) g_aMatlib[ g ][ c ] = true;
 		else g_bFailed = true; // never retry a crashing load in this level

@@ -30,6 +30,7 @@ struct Puppet
 	void* pUnit = nullptr;
 	char  szName[ 24 ] = {};
 	int   iGender = -1, iCostume = -1; // look the unit was created with
+	bool  bOwnModel = false;           // has its own copy of the model (can have another hide than ours)
 	bool  bVisible = true;
 };
 // by slot. Allocated on first use: a global std::map allocates in its constructor, which runs
@@ -69,6 +70,8 @@ std::map<int, double>& Failed()
 }
 double g_fLevelSince = 0;
 bool   g_bSpawningPuppet = false;
+int    g_iAltModelSlot   = 0;     // >0: the puppet being spawned gets its own copy of the model (its own hide)
+bool   g_bAltModelUsed   = false;
 int    g_iFallbackModel  = 0;
 constexpr TUINT OFF_UNIT_ANIMOBJ = 0x94; // AAnimatedUnit::m_pAnimatableObject
 
@@ -143,9 +146,9 @@ int ModelIndex( int a_iGender ) { return ( *(TBOOL*)0x007810e6 ? 2 : 0 ) + ( a_i
 // The hide is a texture of the model's material, and a model is shared by every cow of that gender:
 // retexturing a puppet of OUR gender would retexture our own cow too. So only cows of the other
 // gender get their hide (that model is used by puppets only).
-void ApplyHide( void* a_pUnit, int a_iGender, int a_iCostume, int a_iOwnGender, const std::function<void( const std::string& )>& a_fnLog )
+void ApplyHide( void* a_pUnit, int a_iGender, int a_iCostume, int a_iOwnGender, const std::function<void( const std::string& )>& a_fnLog, bool a_bOwnModel = false )
 {
-	if ( a_iGender == a_iOwnGender ) return;
+	if ( a_iGender == a_iOwnGender && !a_bOwnModel ) return;
 	if ( !SafeApplyMaterial( a_pUnit, a_iCostume ) ) a_fnLog( "puppet hide not applied" );
 }
 
@@ -238,15 +241,21 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 
 			// models/hides of other players are loaded by PlayerAssets (retail loads only ours)
 			if ( rp.look.gender < 0 || rp.look.gender > 1 ) continue;
-			if ( rp.look.gender != iOwnG && !PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ) ) continue;
+			if ( !PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ) ) continue; // model and hide
 			UnitTransform oT;
 			oT.vPos        = vPos;
 			oT.vDir        = vDir;
 			oT.iModelIndex = ModelIndex( rp.look.gender );
 			g_iFallbackModel = ModelIndex( iOwnG );
+			// same gender as ours with another hide: the puppet gets a copy of the model (the hide is a
+			// texture of the model's material, shared by every cow using the model)
+			const bool bWantOwnModel = rp.look.gender == iOwnG && rp.look.hide != ( pProfiles ? *(TINT*)( pProfiles + 0x48 ) : -1 );
+			g_iAltModelSlot   = bWantOwnModel ? slot : 0;
+			g_bAltModelUsed   = false;
 			g_bSpawningPuppet = true;
 			void* pUnit    = SafeSpawn( pMgr, &oT );
 			g_bSpawningPuppet = false;
+			g_iAltModelSlot   = 0;
 			if ( !pUnit || !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) )
 			{
 				Failed()[ slot ] = a_fNow;
@@ -254,11 +263,12 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 				a_fnLog( std::string( "puppet spawn failed: " ) + rp.look.name );
 				continue;
 			}
-			ApplyHide( pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog );
+			ApplyHide( pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog, g_bAltModelUsed );
 			Puppet& pp  = g_oPuppets[ slot ];
 			pp.pUnit    = pUnit;
 			pp.iGender  = rp.look.gender;
 			pp.iCostume = rp.look.hide;
+			pp.bOwnModel = g_bAltModelUsed;
 			strncpy( pp.szName, rp.look.name, sizeof( pp.szName ) - 1 );
 			a_fnLog( std::string( "puppet spawned: " ) + pp.szName + ( pp.iGender ? " female" : " male" ) + " hide " + std::to_string( pp.iCostume ) );
 			continue;
@@ -273,7 +283,7 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		// the player changed the hide: retexture (a gender change needs another model: next level)
 		if ( pp.iCostume != rp.look.hide && pp.iGender == rp.look.gender )
 		{
-			ApplyHide( pp.pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog );
+			ApplyHide( pp.pUnit, rp.look.gender, rp.look.hide, iOwnG, a_fnLog, pp.bOwnModel );
 			pp.iCostume = rp.look.hide;
 		}
 
@@ -302,4 +312,40 @@ MEMBER_HOOK( 0x00416670, AAnimatedUnitStub, AAnimatedUnit_CreateAnimatableObject
 	return CallOriginal( a_iModelIndex );
 }
 
-void RemotePuppets::Install() { InstallHook<AAnimatedUnit_CreateAnimatableObject>(); }
+// AModelRepos::InstantiateModel: the first model of a puppet that needs its own hide is instantiated
+// from a copy of the model, loaded under another path ("data\models\.\<name>", one "." per slot)
+struct AModelReposStub
+{};
+MEMBER_HOOK( 0x006127f0, AModelReposStub, AModelRepos_InstantiateModel, void*, void* a_pModel )
+{
+	if ( g_bSpawningPuppet && g_iAltModelSlot > 0 && !g_bAltModelUsed && a_pModel )
+	{
+		g_bAltModelUsed       = true;
+		void*       pName     = *(void**)( (char*)a_pModel + 0x14 ); // AModel::m_Name (TPString8)
+		const char* szName    = pName ? *(const char**)( (char*)pName + 4 ) : nullptr;
+		const char* szFile    = szName ? strrchr( szName, '\\' ) : nullptr;
+		if ( szFile )
+		{
+			std::string strAlias( szName, szFile + 1 );
+			for ( int i = 0; i < g_iAltModelSlot; i++ ) strAlias += ".\\";
+			strAlias += szFile + 1;
+			void* pPool  = **(void***)0x007ce230;
+			void* pAlias = nullptr;
+			CALL_THIS( 0x006bc3e0, void*, void, pPool, void**, &pAlias, const char*, strAlias.c_str(), bool*, nullptr ); // TPString8Pool::Get
+			CALL_THIS( 0x00612c90, void*, void, this, void**, &pAlias, void*, nullptr );                       // LoadModel( alias, no TRB )
+			void* pAltModel = CALL_THIS( 0x006123c0, void*, void*, this, void**, &pAlias );                   // GetModel( alias )
+			if ( pAlias && --*(TINT*)pAlias == 0 ) CALL_THIS( 0x006bc380, void*, void, pAlias );
+			if ( pAltModel ) return CallOriginal( pAltModel );
+			g_bAltModelUsed = false;
+		}
+		else
+			g_bAltModelUsed = false;
+	}
+	return CallOriginal( a_pModel );
+}
+
+void RemotePuppets::Install()
+{
+	InstallHook<AAnimatedUnit_CreateAnimatableObject>();
+	InstallHook<AModelRepos_InstantiateModel>();
+}

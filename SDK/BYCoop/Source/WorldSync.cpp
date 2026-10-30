@@ -701,6 +701,19 @@ MEMBER_HOOK( 0x00410f00, UnitMgrStub, AUnitManager_DestroyUnitImmediate, void, v
 	CallOriginal( a_pUnit );
 }
 
+struct BikeStub
+{};
+// ABikeManager::SpawnBikesAtRacks (ASimState spawns 1): one bike per player
+MEMBER_HOOK( 0x00540a10, BikeStub, ABikeManager_SpawnBikesAtRacks, void, TINT a_iNumBikes )
+{
+	if ( a_iNumBikes == 1 && g_iPlayers > 1 )
+	{
+		a_iNumBikes = g_iPlayers;
+		Log( "bikes: " + std::to_string( a_iNumBikes ) );
+	}
+	CallOriginal( a_iNumBikes );
+}
+
 struct InventoryStub
 {};
 // AInventoryComponent::AddUnit: a shared fruit was picked up (the unit goes into the inventory)
@@ -730,6 +743,7 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<AUnitManager_SpawnUnitType>();
 	InstallHook<AUnitManager_DestroyUnitImmediate>();
 	InstallHook<AInventoryComponent_AddUnit>();
+	InstallHook<ABikeManager_SpawnBikesAtRacks>();
 }
 
 void WorldSync::Update( bool a_bInWorld )
@@ -741,6 +755,7 @@ void WorldSync::Update( bool a_bInWorld )
 		bHost        = t->IsHost();
 		g_iLocalSlot = g_pSession->LocalSlot();
 		const bool bShared = t->IsInSession() && g_iLocalSlot >= 0 && !g_pSession->Remotes().empty();
+		g_iPlayers         = t->IsInSession() ? (int)g_pSession->Remotes().size() + 1 : 1;
 		a_bInWorld   = a_bInWorld && bShared && *pMainGameLoaded;
 	}
 	if ( a_bInWorld != g_bActive )
