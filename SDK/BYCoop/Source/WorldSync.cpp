@@ -331,6 +331,7 @@ std::map<uint32_t, void*>* g_pNetUnits = nullptr; // net id -> unit
 std::map<void*, uint32_t>* g_pUnitNets = nullptr;
 uint32_t g_uiNextNetId = 1;
 bool     g_bShakeSpawn = false;
+int      g_iPlayers    = 1; // players in the session (bikes)
 
 void Track( uint32_t a_uiId, void* a_pUnit )
 {
