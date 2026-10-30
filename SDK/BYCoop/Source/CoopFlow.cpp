@@ -665,8 +665,8 @@ void CoopFlow::DrawOverlay()
 	ImGui::SetWindowFontScale( 1.4f );
 	ImGui::TextColored( ImVec4( 1, 0.78f, 0, 1 ), "%s", n.inv.fromName.c_str() );
 	ImGui::SetWindowFontScale( 1.15f );
-	ImGui::TextUnformatted( bRu ? u8"приглашает тебя в свой мир" : "invites you to their world" );
-	ImGui::Text( bRu ? u8"F1 - принять     F2 - отклонить   (%d)" : "F1 - accept     F2 - decline   (%d)", iLeft > 0 ? iLeft : 0 );
+	ImGui::TextUnformatted( bRu ? "приглашает тебя в свой мир" : "invites you to their world" );
+	ImGui::Text( bRu ? "F1 - принять     F2 - отклонить   (%d)" : "F1 - accept     F2 - decline   (%d)", iLeft > 0 ? iLeft : 0 );
 	ImGui::End();
 	ImGui::PopStyleColor( 2 );
 	ImGui::PopStyleVar();

@@ -144,7 +144,7 @@ void __fastcall Vt_OnInsertion( void* a_pThis, void* )
 		const auto& it      = pMenu->def.items[ i ];
 		char*       pButton = Button( a_pThis, i );
 		TFLOAT      fWidth  = GetTextWidth( pFont, it.text.c_str(), 1.0f );
-		if ( !it.reserve.empty() ) fWidth = max( fWidth, GetTextWidth( pFont, it.reserve.c_str(), 1.0f ) );
+		if ( !it.reserve.empty() ) { const TFLOAT f2 = GetTextWidth( pFont, it.reserve.c_str(), 1.0f ); if ( f2 > fWidth ) fWidth = f2; }
 		BtnCreate( pButton, pFont, fWidth, pMenu->texts[ i ].c_str(), 5.0f );
 		BtnSetFocusedCol( pButton, 0xffffffff );
 		BtnSetEnabledCol( pButton, 0xffffc800 );
