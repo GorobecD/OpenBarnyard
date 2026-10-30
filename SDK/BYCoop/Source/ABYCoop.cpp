@@ -8,6 +8,7 @@
 #include "RemotePuppets.h"
 #include "PlayerAssets.h"
 #include "CoopFlow.h"
+#include "WorldSync.h"
 #include "NativeMenu.h"
 
 #include <AImGUI.h>
@@ -177,6 +178,7 @@ public:
 			ctx.pLook    = &m_look;
 			ctx.fnLog    = Log;
 			CoopFlow::Install( ctx );
+			WorldSync::Install( m_session.get(), &m_oNetMutex, Log );
 		}
 		MainMenuButton::Install( [ this ]( bool a_bPause ) {
 			if ( m_ready ) CoopFlow::OpenLobby( a_bPause );
@@ -225,6 +227,7 @@ public:
 		pose.levelHash      = bInLevel ? RemotePuppets::CurrentLevel() : 0;
 		LogEscape();
 		CoopFlow::Update( bInLevel, pose.pos );
+		if ( m_ready ) WorldSync::Update( bInLevel );
 		// our breed/gender from the character creator (player profile manager, see RemotePuppets.cpp)
 		if ( char* pProfiles = *(char**)0x007b493c )
 		{

@@ -66,6 +66,15 @@ int main() {
   for (int k = 0; k < 3; ++k) { Run({s[0], s[2]}, 2.1); while (s[0]->PopWorldRequest(req)) { asked++; s[0]->SendWorld(req, notReady); } }
   WorldData none;
   CHECK(asked >= 2 && !s[2]->PopWorld(none), "joiner re-asks while the host is not ready");
+  // game events: joiner -> host (+ relayed to the other joiners), host -> all
+  { const char ev[] = "take apple"; s[1]->SendEvent(ev, sizeof ev, true); }
+  { const char ev[] = "time 12:00"; s[0]->SendEvent(ev, sizeof ev, true); }
+  Run({s[0], s[1], s[2], s[3]}, 0.4);
+  GameEvent ge; int got0 = 0, got2 = 0, got1 = 0;
+  while (s[0]->PopEvent(ge)) got0 += ge.slot == s[1]->LocalSlot() && !strcmp((char*)ge.data.data(), "take apple");
+  while (s[2]->PopEvent(ge)) got2++;
+  while (s[1]->PopEvent(ge)) got1 += ge.slot == 0 && !strcmp((char*)ge.data.data(), "time 12:00");
+  CHECK(got0 == 1 && got2 == 2 && got1 == 1, "game events reach host and are relayed, never echoed back");
   s[0]->BroadcastWorldReady();
   Run({s[0], s[1], s[2], s[3]}, 0.3);
   CHECK(s[2]->PopWorldReady() && !s[2]->PopWorldReady(), "world-ready broadcast reaches joiners once");

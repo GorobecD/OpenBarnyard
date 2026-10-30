@@ -90,6 +90,7 @@ void Session::Leave()
 	m_sentJoin  = false;
 	m_worldRequests.clear();
 	m_worlds.clear();
+	m_events.clear();
 	m_worldReady = false;
 	m_wantWorld  = false;
 }
@@ -123,6 +124,26 @@ void Session::BroadcastWorldReady()
 {
 	uint8_t b = MSG_WORLD_READY;
 	for ( auto& [ peer, slot ] : m_slotOf ) m_t->Send( peer, &b, 1, true );
+}
+
+void Session::SendEvent( const void* a_pData, size_t a_uiSize, bool a_bReliable )
+{
+	if ( m_localSlot < 0 || !m_t->IsInSession() ) return;
+	W w;
+	w << (uint8_t)MSG_EVENT << (int8_t)m_localSlot;
+	w.b.insert( w.b.end(), (const uint8_t*)a_pData, (const uint8_t*)a_pData + a_uiSize );
+	if ( m_t->IsHost() )
+		for ( auto& [ peer, slot ] : m_slotOf ) m_t->Send( peer, w.b.data(), w.b.size(), a_bReliable );
+	else
+		m_t->Send( m_t->HostId(), w.b.data(), w.b.size(), a_bReliable );
+}
+
+bool Session::PopEvent( GameEvent& a_rOut )
+{
+	if ( m_events.empty() ) return false;
+	a_rOut = std::move( m_events.front() );
+	m_events.erase( m_events.begin() );
+	return true;
 }
 
 bool Session::PopWorld( WorldData& a_rOut )
@@ -322,6 +343,23 @@ void Session::OnPacket( const Packet& p, double now )
 			m_worlds.clear();
 			m_worlds.push_back( std::move( d ) );
 			Log( "world received (" + std::to_string( n ) + " bytes)" );
+			return;
+		}
+		case MSG_EVENT:
+		{
+			int8_t slot = -1;
+			r >> slot;
+			if ( !r.ok || slot < 0 || slot >= MAX_PLAYERS || slot == m_localSlot ) return;
+			if ( host )
+			{
+				auto it = m_slotOf.find( p.from );
+				if ( it == m_slotOf.end() || it->second != slot ) return;
+				for ( auto& [ peer, s ] : m_slotOf )
+					if ( peer != p.from ) m_t->Send( peer, p.data.data(), p.data.size(), true );
+			}
+			else if ( p.from != m_t->HostId() )
+				return;
+			if ( m_events.size() < 4096 ) m_events.push_back( { slot, std::vector<uint8_t>( p.data.begin() + 2, p.data.end() ) } );
 			return;
 		}
 		case MSG_WORLD_READY:

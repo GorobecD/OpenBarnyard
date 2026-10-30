@@ -41,6 +41,13 @@ enum MsgType : uint8_t
 	MSG_WORLD_REQ  = 6, // joiner -> host: send me your world (save snapshot)
 	MSG_WORLD_DATA = 7, // host -> joiner: status, level, position, save slot bytes
 	MSG_WORLD_READY = 8, // host -> all: the host entered its world, waiting joiners ask again
+	MSG_EVENT      = 9, // game events (WorldSync): joiner -> host (relayed to the others), host -> all
+};
+
+struct GameEvent
+{
+	int                  slot = -1; // who sent it
+	std::vector<uint8_t> data;
 };
 
 // World snapshot sent to a joiner (stage 1: the host's save slot + where the host is)
@@ -87,6 +94,11 @@ public:
 	bool PopWorldRequest( PeerId& a_rFrom );
 	void SendWorld( PeerId a_to, const WorldData& a_rData );
 	void BroadcastWorldReady();
+
+	// Game events: from a joiner they go to the host, which relays them to the other joiners;
+	// from the host they go to everyone. PopEvent returns the received ones (never our own).
+	void SendEvent( const void* a_pData, size_t a_uiSize, bool a_bReliable );
+	bool PopEvent( GameEvent& a_rOut );
 	bool PopWorld( WorldData& a_rOut );
 	bool PopWorldReady();
 
@@ -120,6 +132,7 @@ private:
 	std::string                 m_status = "offline";
 	std::vector<PeerId>         m_worldRequests;           // host
 	std::vector<WorldData>      m_worlds;                  // joiner
+	std::vector<GameEvent>      m_events;
 	bool                        m_worldReady = false;      // joiner: host announced its world
 	bool                        m_wantWorld  = false;      // joiner: ask the host every 2 s until it sends a ready world
 	double                      m_lastWorldReq = -100;
