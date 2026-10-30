@@ -235,7 +235,7 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		if ( it == g_oPuppets.end() )
 		{
 			// wait until our own level has settled (the friend crashed spawning right after the creator)
-			if ( a_fNow - g_fLevelSince < 3.0 ) continue;
+			if ( a_fNow - g_fLevelSince < 0.5 ) continue;
 			auto f = Failed().find( slot );
 			if ( f != Failed().end() && a_fNow - f->second < 30.0 ) continue;
 

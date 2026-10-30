@@ -69,6 +69,7 @@ enum EvType : uint8_t
 	EV_GONE,      // that unit was picked up / is gone
 	EV_INV_DELTA, // joiner -> host: inventory and money changes
 	EV_INV,       // host -> all: inventory and money
+	EV_PICK,      // a unit placed in the world (note, recipe...) was picked up
 };
 
 struct Writer
@@ -332,6 +333,7 @@ std::map<void*, uint32_t>* g_pUnitNets = nullptr;
 uint32_t g_uiNextNetId = 1;
 bool     g_bShakeSpawn = false;
 int      g_iPlayers    = 1; // players in the session (bikes)
+double   g_fDropUntil  = 0; // units spawned until then came out of something we broke/shook (shared)
 
 void Track( uint32_t a_uiId, void* a_pUnit )
 {
@@ -406,6 +408,71 @@ void ApplyGone( Reader& r )
 	g_bApplying = false;
 }
 
+// A unit just appeared: share it if it came out of a crate/tree we took
+void OnSpawned( void* a_pUnit, const TVector4& a_rPos )
+{
+	if ( !a_pUnit || g_bApplying || !g_bActive || Now() > g_fDropUntil || g_pUnitNets->count( a_pUnit ) ) return;
+	uint32_t uiId = ( (uint32_t)( g_iLocalSlot & 0xff ) << 24 ) | ( g_uiNextNetId++ & 0xffffff );
+	Track( uiId, a_pUnit );
+	Writer w;
+	w << (uint8_t)EV_DROP << uiId << Level() << a_rPos.x << a_rPos.y << a_rPos.z;
+	w.Str( UnitTypeName( a_pUnit ) );
+	Send( w, true );
+}
+
+const TVector4* UnitPosition( void* a_pUnit )
+{
+	void* pSteer = a_pUnit ? At<void*>( a_pUnit, 0x1c ) : nullptr;
+	if ( !pSteer ) return nullptr;
+	typedef const TVector4*( __thiscall * t_GetPos )( void* );
+	return ( *(t_GetPos*)( *(char**)pSteer + 0xac ) )( pSteer ); // ASteer::GetPosition
+}
+
+// a unit placed in the world was picked up here: remove the same one for the others
+void SendPick( void* a_pUnit )
+{
+	const TVector4* p = UnitPosition( a_pUnit );
+	if ( !p ) return;
+	Writer w;
+	w << (uint8_t)EV_PICK << Level() << p->x << p->y << p->z;
+	w.Str( UnitTypeName( a_pUnit ) );
+	Send( w, true );
+	Log( std::string( "picked: " ) + UnitTypeName( a_pUnit ) );
+}
+
+void ApplyPick( Reader& r )
+{
+	uint32_t uiLevel;
+	TFLOAT   x, y, z;
+	r >> uiLevel >> x >> y >> z;
+	std::string strType = r.Str();
+	if ( !r.ok || uiLevel != Level() || strType.empty() || !*ppUnitMgr ) return;
+	// closest unit of that type (units: TNodeList at manager +0x38, node at unit +4)
+	char*  pRoot = (char*)*ppUnitMgr + 0x38;
+	char*  pEnd  = pRoot - 4;
+	void*  pBest = nullptr;
+	TFLOAT fBest = 2.5f * 2.5f;
+	int    guard = 0;
+	for ( char* pUnit = *(char**)( pRoot + 4 ); pUnit && pUnit != pEnd && guard < 4000; pUnit = *(char**)( pUnit + 8 ), guard++ )
+	{
+		if ( strType != UnitTypeName( pUnit ) ) continue;
+		const TVector4* p = UnitPosition( pUnit );
+		if ( !p ) continue;
+		const TFLOAT d = ( p->x - x ) * ( p->x - x ) + ( p->y - y ) * ( p->y - y ) + ( p->z - z ) * ( p->z - z );
+		if ( d < fBest )
+		{
+			fBest = d;
+			pBest = pUnit;
+		}
+	}
+	if ( !pBest ) return;
+	g_bApplying = true;
+	SafeDestroyUnit( pBest );
+	g_bApplying = false;
+	Log( "picked by another player: " + strType );
+}
+
+
 // ================================================================ inventory + money
 typedef std::map<std::string, int> Counts;
 Counts* g_pBaseline     = nullptr; // what we last agreed with the host (joiner) / last broadcast (host)
@@ -421,15 +488,19 @@ void* PlayerInventory()
 	return CALL_THIS( 0x00413cd0, void*, void*, pPlayer, void*, (void*)0x007b4a54 ); // AUnit::FindComponent( &TGetClass( AInventoryGroupComponent ) )
 }
 
+int g_iInvError = 0; // why the last read failed (diagnostics)
 bool SafeReadInventory( Counts& a_rOut )
 {
 	__try
 	{
+		g_iInvError  = 1;
 		void* pGroup = PlayerInventory();
 		if ( !pGroup ) return false;
+		g_iInvError = 2;
 		void* pData = At<void*>( pGroup, 0x10 );
 		char* pCats = At<char*>( pGroup, 0x14 );
 		if ( !pData || !pCats ) return false;
+		g_iInvError = 3;
 		const TINT n = At<TINT>( pData, 0x0c );
 		for ( TINT c = 0; c < n && c < 16; c++ )
 		{
@@ -445,6 +516,7 @@ bool SafeReadInventory( Counts& a_rOut )
 				if ( *sz ) a_rOut[ sz ] += At<TINT>( pItem, 0x10 );
 			}
 		}
+		g_iInvError = 0;
 		return true;
 	}
 	__except ( EXCEPTION_EXECUTE_HANDLER )
@@ -514,8 +586,17 @@ void UpdateInventory()
 	if ( Now() < g_fNextInv ) return;
 	g_fNextInv = Now() + 0.5;
 	Counts now;
-	if ( !SafeReadInventory( now ) ) return;
+	const bool bRead = SafeReadInventory( now );
+	static double s_fNextDiag = 0;
+	if ( Now() >= s_fNextDiag )
+	{
+		s_fNextDiag = Now() + 10.0;
+		std::string str = bRead ? "inventory:" : "inventory: read failed at step " + std::to_string( g_iInvError );
+		for ( auto& [ k, v ] : now ) str += " " + k + "=" + std::to_string( v );
+		Log( str + " money=" + std::to_string( Money() ) );
+	}
 	const int iMoney = Money();
+	if ( !bRead ) now = *g_pBaseline; // (money still syncs)
 	if ( !g_bHaveBaseline )
 	{
 		*g_pBaseline    = now;
@@ -617,6 +698,7 @@ void Handle( const coop::GameEvent& e )
 			if ( !g_bHost && e.slot == 0 ) ApplyRegrowth( r );
 			break;
 		case EV_DROP: ApplyDrop( r ); break;
+		case EV_PICK: ApplyPick( r ); break;
 		case EV_GONE: ApplyGone( r ); break;
 		case EV_INV_DELTA:
 			if ( g_bHost ) ApplyInventoryDelta( r );
@@ -635,7 +717,11 @@ struct RegrowthStub
 MEMBER_HOOK( 0x005e6c30, RegrowthStub, ARegrowthManager_TakeObject, TBOOL, TINT a_iType, void* a_pObject )
 {
 	const TBOOL bRes = CallOriginal( a_iType, a_pObject );
-	if ( bRes && a_pObject ) SendTake( Key( a_pObject ) );
+	if ( bRes && a_pObject )
+	{
+		SendTake( Key( a_pObject ) );
+		if ( !g_bApplying ) g_fDropUntil = Now() + 0.5; // the crate's contents / the fruit spawn next
+	}
 	return bRes;
 }
 // TakeRandomObject: a fruit shaken out of a tree (a unit is spawned right after)
@@ -645,7 +731,7 @@ MEMBER_HOOK( 0x005e4fa0, RegrowthStub, ARegrowthManager_TakeRandomObject, TBOOL,
 	if ( bRes && a_pOutPos )
 	{
 		SendTake( a_pOutPos->z * 1000.0f + a_pOutPos->x );
-		g_bShakeSpawn = g_bActive;
+		if ( !g_bApplying ) g_fDropUntil = Now() + 0.5;
 	}
 	return bRes;
 }
@@ -678,20 +764,29 @@ MEMBER_HOOK( 0x005e5f60, RegrowthStub, ARegrowthManager_RespawnDayRespawn, void 
 
 struct UnitMgrStub
 {};
-// SpawnUnit( AUnitType* ): the shaken fruit (right after TakeRandomObject)
+// SpawnUnit overloads: what comes out of a crate / tree we took is shared (OnSpawned)
 MEMBER_HOOK( 0x00411a70, UnitMgrStub, AUnitManager_SpawnUnitType, void*, void* a_pType, const TVector4& a_rPos, const TVector4& a_rDir )
 {
 	void* pUnit = CallOriginal( a_pType, a_rPos, a_rDir );
-	if ( g_bShakeSpawn && pUnit && !g_bApplying )
-	{
-		g_bShakeSpawn = false;
-		uint32_t uiId = ( (uint32_t)( g_iLocalSlot & 0xff ) << 24 ) | ( g_uiNextNetId++ & 0xffffff );
-		Track( uiId, pUnit );
-		Writer w;
-		w << (uint8_t)EV_DROP << uiId << Level() << a_rPos.x << a_rPos.y << a_rPos.z;
-		w.Str( UnitTypeName( pUnit ) );
-		Send( w, true );
-	}
+	OnSpawned( pUnit, a_rPos );
+	return pUnit;
+}
+MEMBER_HOOK( 0x00411970, UnitMgrStub, AUnitManager_SpawnUnitName, void*, const char* a_szType, const TVector4& a_rPos, const TVector4& a_rDir )
+{
+	void* pUnit = CallOriginal( a_szType, a_rPos, a_rDir );
+	OnSpawned( pUnit, a_rPos );
+	return pUnit;
+}
+MEMBER_HOOK( 0x004119d0, UnitMgrStub, AUnitManager_SpawnUnitPString, void*, void* a_pType, const TVector4& a_rPos, const TVector4& a_rDir )
+{
+	void* pUnit = CallOriginal( a_pType, a_rPos, a_rDir );
+	OnSpawned( pUnit, a_rPos );
+	return pUnit;
+}
+MEMBER_HOOK( 0x00411a30, UnitMgrStub, AUnitManager_SpawnUnitTransform, void*, void* a_pType, const TVector4* a_pTransform )
+{
+	void* pUnit = CallOriginal( a_pType, a_pTransform );
+	if ( a_pTransform ) OnSpawned( pUnit, *a_pTransform ); // AUnitTransform starts with the position
 	return pUnit;
 }
 // DestroyUnitImmediate: a shared fruit is gone (faded out / destroyed)
@@ -713,15 +808,48 @@ MEMBER_HOOK( 0x00540a10, BikeStub, ABikeManager_SpawnBikesAtRacks, void, TINT a_
 		Log( "bikes: " + std::to_string( a_iNumBikes ) );
 	}
 	CallOriginal( a_iNumBikes );
+	// the game puts the other bikes at the other racks (all over the farm): put them next to the first one
+	char* pBikes = (char*)this + 0x20; // Bike[ 56 ] { type, rack, unit, parked }
+	const TINT n = *(TINT*)( (char*)this + 0x544 );
+	void* pFirst = n > 0 ? *(void**)( pBikes + 8 ) : nullptr;
+	const TVector4* pPos = UnitPosition( pFirst );
+	void* pSteer0 = pFirst ? At<void*>( pFirst, 0x1c ) : nullptr;
+	if ( pPos && pSteer0 )
+	{
+		typedef const TVector4*( __thiscall * t_GetV )( void* );
+		typedef void( __thiscall * t_SetV )( void*, const TVector4& );
+		const TVector4* pDir = ( *(t_GetV*)( *(char**)pSteer0 + 0xb8 ) )( pSteer0 );
+		TVector4 vSide( pDir ? -pDir->z : 1.0f, 0.0f, pDir ? pDir->x : 0.0f, 0.0f );
+		for ( TINT i = 1; i < n; i++ )
+		{
+			void* pBike  = *(void**)( pBikes + i * 0x10 + 8 );
+			void* pSteer = pBike ? At<void*>( pBike, 0x1c ) : nullptr;
+			if ( !pSteer ) continue;
+			TVector4 v( pPos->x + vSide.x * 1.6f * i, pPos->y, pPos->z + vSide.z * 1.6f * i, 1.0f );
+			( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, v );
+			if ( pDir ) ( *(t_SetV*)( *(char**)pSteer + 0x8c ) )( pSteer, *pDir );
+		}
+	}
 }
 
 struct InventoryStub
 {};
+// one of the categories of our cow's inventory
+bool IsPlayerCategory( void* a_pCategory )
+{
+	void* pGroup = PlayerInventory();
+	if ( !pGroup ) return false;
+	char* pCats = At<char*>( pGroup, 0x14 );
+	void* pData = At<void*>( pGroup, 0x10 );
+	if ( !pCats || !pData ) return false;
+	return (char*)a_pCategory >= pCats && (char*)a_pCategory < pCats + At<TINT>( pData, 0x0c ) * 0x2c;
+}
 // AInventoryComponent::AddUnit: a shared fruit was picked up (the unit goes into the inventory)
 MEMBER_HOOK( 0x006247d0, InventoryStub, AInventoryComponent_AddUnit, TBOOL, void* a_pUnit, TINT a_iCount, void* a_strInventory )
 {
 	uint32_t uiId;
 	if ( a_pUnit && g_pUnitNets && Untrack( a_pUnit, uiId ) && !g_bApplying ) SendGone( uiId );
+	else if ( a_pUnit && g_bActive && !g_bApplying && IsPlayerCategory( this ) ) SendPick( a_pUnit ); // placed in the world
 	return CallOriginal( a_pUnit, a_iCount, a_strInventory );
 }
 
@@ -742,6 +870,9 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<ARegrowthManager_RespawnInstant>();
 	InstallHook<ARegrowthManager_RespawnDayRespawn>();
 	InstallHook<AUnitManager_SpawnUnitType>();
+	InstallHook<AUnitManager_SpawnUnitName>();
+	InstallHook<AUnitManager_SpawnUnitPString>();
+	InstallHook<AUnitManager_SpawnUnitTransform>();
 	InstallHook<AUnitManager_DestroyUnitImmediate>();
 	InstallHook<AInventoryComponent_AddUnit>();
 	InstallHook<ABikeManager_SpawnBikesAtRacks>();
