@@ -85,16 +85,23 @@ bool ReadLocalPose( coop::Pose& out )
 	out.pos[ 1 ] = pos->y;
 	out.pos[ 2 ] = pos->z;
 	out.speed    = std::sqrt( vel.x * vel.x + vel.z * vel.z );
+	// On a bike (and in some scripted moves) the cow's steer has no kinematics, and ASteer's speed and
+	// direction getters read them without a check: use the velocity then.
+	typedef void*( __thiscall * t_GetKin )( void* );
+	void* pSteer = p->GetSteer();
+	if ( !( *(t_GetKin*)( *(char**)pSteer + 0x114 ) )( pSteer ) )
+	{
+		if ( out.speed > 0.05f ) out.yaw = std::atan2( vel.x, vel.z );
+		return true;
+	}
 	{
 		// what the animation uses: ASteer::GetMeasuredSpeed (vtable +0xd4)
 		typedef TFLOAT( __thiscall * t_GetF )( void* );
-		void* pS  = p->GetSteer();
-		out.speed = ( *(t_GetF*)( *(char**)pS + 0xd4 ) )( pS );
+		out.speed = ( *(t_GetF*)( *(char**)pSteer + 0xd4 ) )( pSteer );
 	}
 	// facing: ASteer::GetDirection (vtable +0xb8)
 	typedef const TVector4*( __thiscall * t_GetDir )( void* );
-	void*           pSteer = p->GetSteer();
-	const TVector4* pDir   = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer );
+	const TVector4* pDir = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer );
 	if ( pDir && ( pDir->x != 0.0f || pDir->z != 0.0f ) ) out.yaw = std::atan2( pDir->x, pDir->z );
 	else if ( out.speed > 0.05f ) out.yaw = std::atan2( vel.x, vel.z );
 	return true;

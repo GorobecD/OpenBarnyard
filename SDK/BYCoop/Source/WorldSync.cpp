@@ -614,6 +614,8 @@ bool SafeCollectNpcs( std::vector<NpcOut>& a_rOut )
 		ForEachUnit( [ & ]( void* u ) {
 			if ( !IsSyncedNpc( u, pPlayer ) ) return;
 			void*           pSteer = At<void*>( u, 0x1c );
+			typedef void*( __thiscall * t_GetKin )( void* );
+			if ( !( *(t_GetKin*)( *(char**)pSteer + 0x114 ) )( pSteer ) ) return; // ridden / scripted: no kinematics
 			const TVector4* p      = UnitPosition( u );
 			if ( !p ) return;
 			typedef const TVector4*( __thiscall * t_GetV )( void* );
