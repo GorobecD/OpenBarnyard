@@ -158,6 +158,7 @@ public:
 		else if ( m_ready && !_stricmp( szMode, "join" ) && *szJoin ) m_session->Join( szJoin );
 
 		PlayerAssets::Install( Log );
+		RemotePuppets::Install();
 
 		// Our name: bycoop.ini name=, else the Steam persona name
 		if ( m_ready && ( !*m_look.name || !strcmp( m_look.name, "Cow" ) ) )

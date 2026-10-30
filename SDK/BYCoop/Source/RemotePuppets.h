@@ -7,6 +7,7 @@
 
 namespace RemotePuppets
 {
+void Install();
 // a_pLocalUnit: the local player's AUnit (TNULL outside a level, e.g. in the menus)
 void Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const std::map<int, coop::RemotePlayer>& a_rRemotes, double a_fNow, double a_fDelay,
              const std::function<void( const std::string& )>& a_fnLog );

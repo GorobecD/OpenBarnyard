@@ -2,6 +2,7 @@
 #include "RemotePuppets.h"
 #include "PlayerAssets.h"
 #include <BYardSDK/SDKHooks.h>
+#include <HookHelpers.h>
 #include <Math/TVector4.h>
 #include <cmath>
 #include <map>
@@ -67,6 +68,8 @@ std::map<int, double>& Failed()
 	return *s_p;
 }
 double g_fLevelSince = 0;
+bool   g_bSpawningPuppet = false;
+int    g_iFallbackModel  = 0;
 constexpr TUINT OFF_UNIT_ANIMOBJ = 0x94; // AAnimatedUnit::m_pAnimatableObject
 
 // SEH guards: a crash inside retail spawning must not take the game down (no C++ objects here)
@@ -132,6 +135,10 @@ void SafeSetVisible( void* a_pUnit, bool a_bVisible )
 	{
 	}
 }
+
+// The "player" unit type lists 4 models: male, female, and the barn's male, female
+// (AGameLoader: the barn explore minigame spawns the player with 2/3)
+int ModelIndex( int a_iGender ) { return ( *(TBOOL*)0x007810e6 ? 2 : 0 ) + ( a_iGender == 1 ? 1 : 0 ); }
 
 // The hide is a texture of the model's material, and a model is shared by every cow of that gender:
 // retexturing a puppet of OUR gender would retexture our own cow too. So only cows of the other
@@ -235,8 +242,11 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			UnitTransform oT;
 			oT.vPos        = vPos;
 			oT.vDir        = vDir;
-			oT.iModelIndex = rp.look.gender;
+			oT.iModelIndex = ModelIndex( rp.look.gender );
+			g_iFallbackModel = ModelIndex( iOwnG );
+			g_bSpawningPuppet = true;
 			void* pUnit    = SafeSpawn( pMgr, &oT );
+			g_bSpawningPuppet = false;
 			if ( !pUnit || !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) )
 			{
 				Failed()[ slot ] = a_fNow;
@@ -273,3 +283,23 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		SetMeasuredSpeed( pSteer, p.speed );
 	}
 }
+
+// AAnimatedUnit::CreateAnimatableObject: a unit whose model type isn't loaded is created with no
+// animatable object, and the game later crashes on it (AAttachedUnitRequirement::Evaluate), even if
+// it is destroyed right away. For a puppet, check the model first and fall back to our own model.
+struct AAnimatedUnitStub
+{};
+MEMBER_HOOK( 0x00416670, AAnimatedUnitStub, AAnimatedUnit_CreateAnimatableObject, TBOOL, TINT a_iModelIndex )
+{
+	if ( g_bSpawningPuppet )
+	{
+		void* pPooled = nullptr; // TPString8 returned by AAnimatedUnit::GetModelName 0x4165c0
+		CALL_THIS( 0x004165c0, void*, void*, this, void**, &pPooled, TINT, a_iModelIndex );
+		void* pType = CALL_THIS( 0x0057d820, void*, void*, *(void**)0x007899b8, void**, &pPooled ); // AAnimatableObjectManager::FindType
+		if ( pPooled && --*(TINT*)pPooled == 0 ) CALL_THIS( 0x006bc380, void*, void, pPooled );
+		if ( !pType ) a_iModelIndex = g_iFallbackModel;
+	}
+	return CallOriginal( a_iModelIndex );
+}
+
+void RemotePuppets::Install() { InstallHook<AAnimatedUnit_CreateAnimatableObject>(); }
