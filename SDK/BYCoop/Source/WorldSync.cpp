@@ -58,6 +58,7 @@ void Log( const std::string& s )
 bool g_bActive  = false; // in the shared world this frame
 bool g_bHost    = false;
 bool g_bApplying = false; // applying a remote change: our hooks must not echo it
+bool g_bHostSameLevel = false; // joiner: the host is on our map (its regrowth snapshots apply)
 int  g_iLocalSlot = -1;
 
 enum EvType : uint8_t
@@ -275,6 +276,8 @@ void ApplyTake( Reader& r )
 
 double g_fNextRegrowth = 0;
 
+std::vector<uint8_t>* g_pLastRegrowth = nullptr;
+double                g_fLastRegrowthSent = 0;
 void SendRegrowth()
 {
 	Writer w;
@@ -287,6 +290,13 @@ void SendRegrowth()
 		n++;
 	} );
 	memcpy( &w.b[ uiCountAt ], &n, 2 );
+	// only when something grew / was taken (the total time in the header always changes: skip it)
+	const size_t uiHeader = 1 + 4 + 4;
+	std::vector<uint8_t> body( w.b.begin() + uiHeader, w.b.end() );
+	if ( !g_pLastRegrowth ) g_pLastRegrowth = new std::vector<uint8_t>();
+	if ( body == *g_pLastRegrowth && Now() - g_fLastRegrowthSent < 5.0 ) return;
+	*g_pLastRegrowth     = std::move( body );
+	g_fLastRegrowthSent = Now();
 	Send( w, true );
 }
 
@@ -584,7 +594,7 @@ void SendInventory( const Counts& a_rCounts, int a_iMoney )
 void UpdateInventory()
 {
 	if ( Now() < g_fNextInv ) return;
-	g_fNextInv = Now() + 0.5;
+	g_fNextInv = Now() + 0.1;
 	Counts now;
 	const bool bRead = SafeReadInventory( now );
 	static double s_fNextDiag = 0;
@@ -738,7 +748,7 @@ MEMBER_HOOK( 0x005e4fa0, RegrowthStub, ARegrowthManager_TakeRandomObject, TBOOL,
 // Random growth only happens in the host's world; the joiners get it from the snapshots
 MEMBER_HOOK( 0x005e51b0, RegrowthStub, ARegrowthManager_GrowObjects, TINT, TUINT a_uiGroup, TINT a_iCount, TFLOAT a_fAge, TINT a_iType )
 {
-	if ( g_bActive && !g_bHost && !g_bApplying ) return 0;
+	if ( g_bActive && !g_bHost && !g_bApplying && g_bHostSameLevel ) return 0;
 	return CallOriginal( a_uiGroup, a_iCount, a_fAge, a_iType );
 }
 MEMBER_HOOK( 0x005e5340, RegrowthStub, ARegrowthManager_GrowGroup, TINT, TUINT a_uiGroup )
@@ -748,7 +758,7 @@ MEMBER_HOOK( 0x005e5340, RegrowthStub, ARegrowthManager_GrowGroup, TINT, TUINT a
 }
 MEMBER_HOOK( 0x005e53a0, RegrowthStub, ARegrowthManager_GrowAllInType, void, TINT a_iType, TINT a_iCount )
 {
-	if ( g_bActive && !g_bHost && !g_bApplying ) return;
+	if ( g_bActive && !g_bHost && !g_bApplying && g_bHostSameLevel ) return;
 	CallOriginal( a_iType, a_iCount );
 }
 MEMBER_HOOK( 0x005e5ea0, RegrowthStub, ARegrowthManager_RespawnInstant, void )
@@ -865,10 +875,7 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<ARegrowthManager_TakeObject>();
 	InstallHook<ARegrowthManager_TakeRandomObject>();
 	InstallHook<ARegrowthManager_GrowObjects>();
-	InstallHook<ARegrowthManager_GrowGroup>();
 	InstallHook<ARegrowthManager_GrowAllInType>();
-	InstallHook<ARegrowthManager_RespawnInstant>();
-	InstallHook<ARegrowthManager_RespawnDayRespawn>();
 	InstallHook<AUnitManager_SpawnUnitType>();
 	InstallHook<AUnitManager_SpawnUnitName>();
 	InstallHook<AUnitManager_SpawnUnitPString>();
@@ -888,6 +895,9 @@ void WorldSync::Update( bool a_bInWorld )
 		g_iLocalSlot = g_pSession->LocalSlot();
 		const bool bShared = t->IsInSession() && g_iLocalSlot >= 0 && !g_pSession->Remotes().empty();
 		g_iPlayers         = t->IsInSession() ? (int)g_pSession->Remotes().size() + 1 : 1;
+		g_bHostSameLevel   = false;
+		for ( auto& [ slot, rp ] : g_pSession->Remotes() )
+			if ( slot == 0 && rp.hasPose && rp.b.levelHash == RemotePuppets::CurrentLevel() ) g_bHostSameLevel = true;
 		a_bInWorld   = a_bInWorld && bShared && *pMainGameLoaded;
 	}
 	if ( a_bInWorld != g_bActive )
@@ -919,7 +929,7 @@ void WorldSync::Update( bool a_bInWorld )
 	}
 	if ( g_bHost && now >= g_fNextRegrowth )
 	{
-		g_fNextRegrowth = now + 3.0;
+		g_fNextRegrowth = now + 0.25;
 		SendRegrowth();
 	}
 	UpdateInventory();
