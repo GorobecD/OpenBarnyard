@@ -7,6 +7,8 @@
 #include "DevTools.h"
 #include "RemotePuppets.h"
 #include "PlayerAssets.h"
+#include "CoopFlow.h"
+#include "NativeMenu.h"
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -157,33 +159,30 @@ public:
 
 		PlayerAssets::Install( Log );
 
-		// MULTIPLAYER button in the main menu (game-styled popup instead of the Alt+` overlay)
-		MainMenuButton::Install(
-		    [ this ]( bool a_bRu, std::wstring& a_rTitle, std::wstring& a_rMsg ) {
-			    std::lock_guard<std::mutex> lock( m_oNetMutex );
-			    const bool bIn = m_ready && m_session->Transport()->IsInSession();
-			    a_rTitle       = a_bRu ? L"\x041c\x0423\x041b\x042c\x0422\x0418\x041f\x041b\x0415\x0415\x0420" : L"MULTIPLAYER";
-			    if ( !m_ready )
-				    a_rMsg = a_bRu ? L"\x0421\x0435\x0442\x044c \x043d\x0435\x0434\x043e\x0441\x0442\x0443\x043f\x043d\x0430. \x0417\x0430\x043f\x0443\x0441\x0442\x0438\x0442\x0435 Steam." : L"Network unavailable. Start Steam and restart the game.";
-			    else if ( !bIn )
-				    a_rMsg = a_bRu ? L"\x0421\x043e\x0437\x0434\x0430\x0442\x044c \x0438\x0433\x0440\x0443 \x0434\x043b\x044f \x0434\x0440\x0443\x0437\x0435\x0439? \x041e\x043d\x0438 \x043f\x043e\x0434\x043a\x043b\x044e\x0447\x0430\x0442\x0441\x044f \x043f\x043e \x043f\x0440\x0438\x0433\x043b\x0430\x0448\x0435\x043d\x0438\x044e Steam." : L"Host a co-op game? Friends join through a Steam invite.";
-			    else
-				    a_rMsg = a_bRu ? L"\x0412\x044b \x0432 \x043a\x043e\x043e\x043f\x0435\x0440\x0430\x0442\x0438\x0432\x0435. \x0412\x044b\x0439\x0442\x0438 \x0438\x0437 \x0441\x0435\x0441\x0441\x0438\x0438?" : L"You are in a co-op session. Leave it?";
-		    },
-		    [ this ]( bool a_bYes ) {
-			    if ( !a_bYes || !m_ready ) return;
-			    std::lock_guard<std::mutex> lock( m_oNetMutex );
-			    auto* t = m_session->Transport();
-			    if ( t->IsInSession() ) { m_session->Leave(); Log( "left session (menu)" ); }
-			    else
-			    {
-				    m_session->Host();
-				    Log( "hosting (menu)" );
-			    }
-			    // The Steam overlay does not hook this D3D8 game: show our own invite list (mouse)
-			    m_bShowInvite = true;
-			    if ( g_pImGui && !g_pImGui->IsEnabled() ) g_pImGui->Toggle();
-		    } );
+		// Our name: bycoop.ini name=, else the Steam persona name
+		if ( m_ready && ( !*m_look.name || !strcmp( m_look.name, "Cow" ) ) )
+		{
+			std::string strPersona = t->LocalName();
+			if ( !strPersona.empty() ) strncpy( m_look.name, strPersona.c_str(), sizeof( m_look.name ) - 1 );
+			m_session->SetLocalAppearance( m_look );
+		}
+
+		// Lobby, invites, the joiner's cow and entering the host's world (game-styled menus)
+		if ( m_ready )
+		{
+			CoopFlow::Context ctx;
+			ctx.pSession = m_session.get();
+			ctx.pMutex   = &m_oNetMutex;
+			ctx.pLook    = &m_look;
+			ctx.fnLog    = Log;
+			CoopFlow::Install( ctx );
+		}
+		MainMenuButton::Install( [ this ]( bool a_bPause ) {
+			if ( m_ready ) CoopFlow::OpenLobby( a_bPause );
+			else
+				NativeMenu::Message( NativeMenu::IsRussian() ? L"\x041c\x0423\x041b\x042c\x0422\x0418\x041f\x041b\x0415\x0415\x0420" : L"MULTIPLAYER",
+				                     NativeMenu::IsRussian() ? L"\x0421\x0435\x0442\x044c \x043d\x0435\x0434\x043e\x0441\x0442\x0443\x043f\x043d\x0430. \x0417\x0430\x043f\x0443\x0441\x0442\x0438\x0442\x0435 Steam." : L"Network unavailable. Start Steam and restart the game." );
+		} );
 
 		// Network runs on its own thread: Barnyard stops its update loop while the window is inactive
 		// (e.g. a second copy in the background), which made the host time the player out and re-join.
@@ -224,6 +223,7 @@ public:
 		const bool bInLevel = ReadLocalPose( pose );
 		pose.levelHash      = bInLevel ? RemotePuppets::CurrentLevel() : 0;
 		LogEscape();
+		CoopFlow::Update( bInLevel, pose.pos );
 		// our breed/gender from the character creator (player profile manager, see RemotePuppets.cpp)
 		if ( char* pProfiles = *(char**)0x007b493c )
 		{
@@ -354,8 +354,11 @@ public:
 	void OnImGuiRenderOverlay( AImGUI* ) override
 	{
 		std::lock_guard<std::mutex> lock( m_oNetMutex );
-		DrawInviteWindow();
-		if ( m_ready ) DrawNameTags();
+		if ( m_ready )
+		{
+			DrawNameTags();
+			CoopFlow::DrawOverlay();
+		}
 		ImGui::SetNextWindowPos( ImVec2( 8, 8 ) );
 		ImGui::SetNextWindowBgAlpha( 0.4f );
 		ImGui::Begin( "##bycoop_status", TNULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav );

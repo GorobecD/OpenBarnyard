@@ -34,6 +34,9 @@ project "BYCoop"
 
 	links { "ws2_32" }
 
+	-- Cyrillic menu texts are UTF-8 in the sources
+	buildoptions { "/utf-8" }
+
 	includedirs
 	{
 		"Source",

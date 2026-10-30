@@ -9,7 +9,7 @@
 namespace coop
 {
 
-constexpr uint32_t PROTOCOL_VERSION = 2; // 2: Pose::levelHash = terrain id + 1
+constexpr uint32_t PROTOCOL_VERSION = 3; // 2: Pose::levelHash = terrain id + 1, 3: world transfer
 constexpr int      MAX_PLAYERS      = 4;
 
 // What the player picked in the character creator (AFrontEndCharacterSelectState).
@@ -38,6 +38,18 @@ enum MsgType : uint8_t
 	MSG_PLAYERINFO = 3, // host -> all: slot <-> peer <-> appearance (whole roster)
 	MSG_POSE       = 4, // anyone -> host -> others (host relays): slot + tick + pose
 	MSG_WORLD      = 5, // host -> all: world events (M3)
+	MSG_WORLD_REQ  = 6, // joiner -> host: send me your world (save snapshot)
+	MSG_WORLD_DATA = 7, // host -> joiner: status, level, position, save slot bytes
+	MSG_WORLD_READY = 8, // host -> all: the host entered its world, waiting joiners ask again
+};
+
+// World snapshot sent to a joiner (stage 1: the host's save slot + where the host is)
+struct WorldData
+{
+	bool                 ready = false; // false: the host is not in its world yet (menu, minigame)
+	uint32_t             level = 0;
+	float                pos[ 3 ] = {};
+	std::vector<uint8_t> slot;          // APlayerProgress::SaveSlot (0xd170 bytes)
 };
 
 struct RemotePlayer
@@ -69,6 +81,15 @@ public:
 	bool Join( const std::string& target ) { return m_t->Join( target ); }
 	void Leave();
 
+	// World transfer. Host: PopWorldRequest/SendWorld/BroadcastWorldReady from the game thread.
+	// Joiner: RequestWorld, then PopWorld once it arrives (also re-request on WorldReady).
+	void RequestWorld();
+	bool PopWorldRequest( PeerId& a_rFrom );
+	void SendWorld( PeerId a_to, const WorldData& a_rData );
+	void BroadcastWorldReady();
+	bool PopWorld( WorldData& a_rOut );
+	bool PopWorldReady();
+
 	ITransport*      Transport() { return m_t.get(); }
 	int              LocalSlot() const { return m_localSlot; }
 	const std::map<int, RemotePlayer>& Remotes() const { return m_remotes; }
@@ -97,6 +118,9 @@ private:
 	std::map<PeerId, Appearance> m_looks;                  // host only
 	std::map<int, uint32_t>     m_lastTick;                // drop stale/reordered poses
 	std::string                 m_status = "offline";
+	std::vector<PeerId>         m_worldRequests;           // host
+	std::vector<WorldData>      m_worlds;                  // joiner
+	bool                        m_worldReady = false;      // joiner: host announced its world
 };
 
 } // namespace coop

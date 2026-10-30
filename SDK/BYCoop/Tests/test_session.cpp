@@ -48,6 +48,21 @@ int main() {
     }
   CHECK(looks, "appearance (gender/hide/name) propagated to everyone");
   CHECK(poses, "poses relayed via host and converge per slot");
+  // world transfer: joiner asks, host answers with a save-slot sized blob (0xd170 bytes)
+  s[1]->RequestWorld();
+  Run({s[0], s[1]}, 0.3);
+  PeerId req = 0;
+  CHECK(s[0]->PopWorldRequest(req) && req != 0, "host gets the world request");
+  WorldData wd; wd.ready = true; wd.level = 7; wd.pos[1] = 2.5f; wd.slot.resize(0xd170);
+  for (size_t i = 0; i < wd.slot.size(); ++i) wd.slot[i] = (uint8_t)(i * 31);
+  s[0]->SendWorld(req, wd);
+  Run({s[0], s[1]}, 0.5);
+  WorldData got;
+  bool okw = s[1]->PopWorld(got);
+  CHECK(okw && got.ready && got.level == 7 && got.pos[1] == 2.5f && got.slot == wd.slot, "joiner receives the whole world blob");
+  s[0]->BroadcastWorldReady();
+  Run({s[0], s[1], s[2], s[3]}, 0.3);
+  CHECK(s[2]->PopWorldReady() && !s[2]->PopWorldReady(), "world-ready broadcast reaches joiners once");
   s[4]->Join("127.0.0.1:27100");
   Run({s[0], s[1], s[2], s[3], s[4]}, 1.5);
   CHECK(s[4]->LocalSlot() < 0, "5th player rejected (full)");

@@ -86,7 +86,7 @@ AImGUI::AImGUI()
 		const char* aCandidates[] = { "Resources/Fonts/Bahnschrift.ttf", szSysFont };
 		ImFont*     pFont         = TNULL;
 		for ( const char* szPath : aCandidates )
-			if ( GetFileAttributesA( szPath ) != INVALID_FILE_ATTRIBUTES && ( pFont = io.Fonts->AddFontFromFileTTF( szPath, 17.0f ) ) ) break;
+			if ( GetFileAttributesA( szPath ) != INVALID_FILE_ATTRIBUTES && ( pFont = io.Fonts->AddFontFromFileTTF( szPath, 17.0f, TNULL, io.Fonts->GetGlyphRangesCyrillic() ) ) ) break; // + Cyrillic (Steam names, RU/UA text)
 		if ( !pFont ) io.Fonts->AddFontDefault();
 	}
 

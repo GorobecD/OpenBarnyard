@@ -23,6 +23,13 @@ constexpr TUINT    OFF_ACTIVATED_ID  = 0x13f0; // TINT m_iActivatedButtonID
 constexpr TINT     BUTTON_OPTIONS    = 2; // ours goes in front of it, i.e. under LOAD GAME
 constexpr TINT     BUTTON_MULTIPLAYER = 6;
 
+// AStartMenuState layout (retail, vtable 0x0071a440): buttons RESUME, RESTART, OPTIONS, HELP, QUIT
+constexpr TUINTPTR PAUSEMENU_VTABLE     = 0x0071a440;
+constexpr TUINT    OFF_PAUSE_BUTTONS    = 0x850;
+constexpr TUINT    OFF_PAUSE_ACTIVATED  = 0x1264;
+constexpr TINT     PAUSE_BUTTON_QUIT    = 4;
+constexpr TINT     PAUSE_BUTTON_MULTIPLAYER = 5;
+
 // AGUI2Button (retail)
 constexpr TUINT OFF_BTN_ID            = 0x60;
 constexpr TUINT OFF_BTN_SCALEONFOCUS  = 0x64;
@@ -69,10 +76,6 @@ const TFLOAT* pShadowOffsetMul = (const TFLOAT*)0x0071ec9c;
 constexpr TINT INPUT_YES = 10;
 constexpr TINT INPUT_NO  = 11;
 
-MainMenuButton::Handler   g_fnHandler;
-MainMenuButton::Describer g_fnDescribe;
-typedef void( __thiscall* t_PopupRemove )( void* );
-const auto PopupRemove = (t_PopupRemove)0x004282d0; // AGameState::Remove, as in retail OnQuitPopupResponse 0x00408ef0
 
 TBOOL IsRussian()
 {
@@ -81,9 +84,9 @@ TBOOL IsRussian()
 }
 
 // Replays the retail button setup for one more button
-void* CreateMultiplayerButton( char* a_pState )
+void* CreateMultiplayerButton( char* a_pState, const char* a_szFont, TINT a_iId, TINT a_iRotation )
 {
-	void* pFont = FindFont( FONT_PRIMARY );
+	void* pFont = FindFont( a_szFont );
 	const wchar_t* wszText = IsRussian() ? L"\x041c\x0423\x041b\x042c\x0422\x0418\x041f\x041b\x0415\x0415\x0420" /* МУЛЬТИПЛЕЕР */ : L"MULTIPLAYER";
 
 	char* pButton = (char*)Malloc( SIZEOF_BUTTON, 0, 0, -1 );
@@ -95,12 +98,12 @@ void* CreateMultiplayerButton( char* a_pState )
 	BtnSetDisabledCol( pButton, 0xff4b4b4b );
 	BtnSetFocusedScale( pButton, 1.0f );
 	( *(t_VoidThis**)pButton )[ 0x4c / 4 ]( pButton ); // OnFocusLost
-	*(TINT*)( pButton + OFF_BTN_ID )            = BUTTON_MULTIPLAYER;
+	*(TINT*)( pButton + OFF_BTN_ID )            = a_iId;
 	*(TBOOL*)( pButton + OFF_BTN_SCALEONFOCUS ) = TFALSE;
 
 	// tilt like the neighbours (the retail table has 6 entries)
 	const TFLOAT* pRotations = *(const TFLOAT**)( a_pState + OFF_ROTATIONS );
-	Rotate( pButton + OFF_BTN_TRANSFORM, pRotations ? -pRotations[ 1 ] : 0.0f ); // opposite tilt to LOAD GAME above
+	Rotate( pButton + OFF_BTN_TRANSFORM, pRotations ? -pRotations[ a_iRotation ] : 0.0f ); // opposite tilt to the button above
 
 	BtnSetImage( pButton, PANEL_IMAGE, 1.25f, 1.5f );
 
@@ -114,22 +117,8 @@ void* CreateMultiplayerButton( char* a_pState )
 	return pButton;
 }
 
-struct ResponseEvent
-{
-	TINT eButton;
-};
-
-// Listener object handed to the game's TGenericListener::Connect (retail object size 0x14)
-alignas( 8 ) TBYTE g_aListener[ 0x40 ];
-
-// Same contract as retail OnQuitPopupResponse (0x00408ef0): __stdcall, close the popup, return FALSE
-TBOOL __stdcall OnPopupResponse( void* /*a_pCaller*/, void* a_pPopup, ResponseEvent* a_pEvent )
-{
-	const bool bYes = a_pEvent && a_pEvent->eButton == INPUT_YES;
-	if ( a_pPopup ) PopupRemove( a_pPopup );
-	if ( g_fnHandler ) g_fnHandler( bYes );
-	return TFALSE;
-}
+MainMenuButton::Opener g_fnOpen;
+char*                  g_pMainMenu = nullptr; // the main menu the lobby was opened from
 } // namespace
 
 struct AGUI2MenuStub
@@ -138,7 +127,9 @@ MEMBER_HOOK( 0x0063e450, AGUI2MenuStub, AGUI2Menu_AddMenuItem, void, void* a_pIt
 {
 	char* pState = (char*)this - OFF_MENU;
 	if ( a_pItem == pState + OFF_BUTTONS + BUTTON_OPTIONS * SIZEOF_BUTTON && *(TUINTPTR*)pState == MAINMENU_VTABLE )
-		CallOriginal( CreateMultiplayerButton( pState ) ); // goes right under LOAD GAME
+		CallOriginal( CreateMultiplayerButton( pState, FONT_PRIMARY, BUTTON_MULTIPLAYER, 1 ) ); // goes right under LOAD GAME
+	if ( a_pItem == pState + OFF_PAUSE_BUTTONS + PAUSE_BUTTON_QUIT * SIZEOF_BUTTON && *(TUINTPTR*)pState == PAUSEMENU_VTABLE )
+		CallOriginal( CreateMultiplayerButton( pState, "Rekord26", PAUSE_BUTTON_MULTIPLAYER, 3 ) ); // above QUIT
 
 	CallOriginal( a_pItem );
 }
@@ -154,25 +145,36 @@ MEMBER_HOOK( 0x004099f0, AMainMenuStub, AFrontEndMainMenuState2_OnMenuClose, voi
 		return;
 	}
 
-	std::wstring wsTitle, wsMessage;
-	if ( g_fnDescribe ) g_fnDescribe( IsRussian(), wsTitle, wsMessage );
-
-	TINT  aEmptyTPString8 = 0;
-	void* pPopup          = Malloc( 0x19c8, 0, 0, -1 );
-	// argument order/values as the retail QUIT popup (0x00409c10..0x00409c54)
-	PopupCtor( pPopup, wsTitle.c_str(), wsMessage.c_str(), &aEmptyTPString8, 11, TFALSE, INPUT_YES, INPUT_NO, 0, 0, TFALSE, 60.0f, 0 );
 	*(TINT*)( pState + OFF_ACTIVATED_ID ) = -1;
-
-	memset( g_aListener, 0, sizeof( g_aListener ) );
-	ListenerConnect( g_aListener, (char*)pPopup + 0x7d8, pState, (void*)OnPopupResponse, 0 );
-
-	AGameStateController::GetSingleton()->PushState( (AGameState*)pPopup );
+	g_pMainMenu                           = pState;
+	if ( g_fnOpen ) g_fnOpen( false );
 }
 
-void MainMenuButton::Install( Describer a_fnDescribe, Handler a_fnHandler )
+struct APauseMenuStub
+{};
+MEMBER_HOOK( 0x0042fa40, APauseMenuStub, AStartMenuState_OnMenuClose, void )
 {
-	g_fnDescribe = a_fnDescribe;
-	g_fnHandler  = a_fnHandler;
+	char* pState = (char*)this;
+	if ( *(TINT*)( pState + OFF_PAUSE_ACTIVATED ) != PAUSE_BUTTON_MULTIPLAYER )
+	{
+		CallOriginal();
+		return;
+	}
+	*(TINT*)( pState + OFF_PAUSE_ACTIVATED ) = -1;
+	if ( g_fnOpen ) g_fnOpen( true );
+}
+
+void MainMenuButton::OpenLoadGame()
+{
+	if ( !g_pMainMenu || *(TUINTPTR*)g_pMainMenu != MAINMENU_VTABLE ) return;
+	*(TINT*)( g_pMainMenu + OFF_ACTIVATED_ID ) = 1; // FRONTENDBUTTON_LOADGAME
+	reinterpret_cast<AFrontEndMainMenuState2_OnMenuClose::_hook_obj*>( g_pMainMenu )->CallOriginal();
+}
+
+void MainMenuButton::Install( Opener a_fnOpen )
+{
+	g_fnOpen = a_fnOpen;
 	InstallHook<AGUI2Menu_AddMenuItem>();
 	InstallHook<AFrontEndMainMenuState2_OnMenuClose>();
+	InstallHook<AStartMenuState_OnMenuClose>();
 }

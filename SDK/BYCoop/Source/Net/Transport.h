@@ -57,6 +57,16 @@ public:
 	virtual std::vector<Friend> OnlineFriends() { return {}; }
 	virtual bool                Invite( PeerId ) { return false; }
 
+	// An invite that arrived from a friend (Steam LobbyInvite_t), shown by the game; Accept = Join( lobby )
+	struct InviteInfo
+	{
+		PeerId      from = 0;
+		std::string fromName;
+		std::string lobby;
+	};
+	virtual bool        PollInvite( InviteInfo& ) { return false; }
+	virtual std::string LocalName() { return ""; } // Steam persona name ("" for UDP)
+
 	// Messaging
 	virtual bool Send( PeerId to, const void* data, size_t size, bool reliable ) = 0;
 	virtual void Receive( std::vector<Packet>& out )                             = 0;

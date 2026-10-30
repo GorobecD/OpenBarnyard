@@ -87,6 +87,55 @@ void Session::Leave()
 	m_lastTick.clear();
 	m_localSlot = -1;
 	m_sentJoin  = false;
+	m_worldRequests.clear();
+	m_worlds.clear();
+	m_worldReady = false;
+}
+
+void Session::RequestWorld()
+{
+	if ( !m_t->IsInSession() || m_t->IsHost() ) return;
+	uint8_t b = MSG_WORLD_REQ;
+	m_t->Send( m_t->HostId(), &b, 1, true );
+}
+
+bool Session::PopWorldRequest( PeerId& a_rFrom )
+{
+	if ( m_worldRequests.empty() ) return false;
+	a_rFrom = m_worldRequests.front();
+	m_worldRequests.erase( m_worldRequests.begin() );
+	return true;
+}
+
+void Session::SendWorld( PeerId a_to, const WorldData& a_rData )
+{
+	W w;
+	w << (uint8_t)MSG_WORLD_DATA << (uint8_t)( a_rData.ready ? 1 : 0 ) << a_rData.level << a_rData.pos[ 0 ] << a_rData.pos[ 1 ] << a_rData.pos[ 2 ]
+	  << (uint32_t)a_rData.slot.size();
+	w.b.insert( w.b.end(), a_rData.slot.begin(), a_rData.slot.end() );
+	m_t->Send( a_to, w.b.data(), w.b.size(), true );
+	Log( "world sent (" + std::to_string( a_rData.slot.size() ) + " bytes, ready " + std::to_string( a_rData.ready ) + ")" );
+}
+
+void Session::BroadcastWorldReady()
+{
+	uint8_t b = MSG_WORLD_READY;
+	for ( auto& [ peer, slot ] : m_slotOf ) m_t->Send( peer, &b, 1, true );
+}
+
+bool Session::PopWorld( WorldData& a_rOut )
+{
+	if ( m_worlds.empty() ) return false;
+	a_rOut = std::move( m_worlds.front() );
+	m_worlds.erase( m_worlds.begin() );
+	return true;
+}
+
+bool Session::PopWorldReady()
+{
+	bool b       = m_worldReady;
+	m_worldReady = false;
+	return b;
 }
 
 void Session::SendRoster()
@@ -244,6 +293,26 @@ void Session::OnPacket( const Packet& p, double now )
 			if ( r.ok ) m_remotes.swap( next );
 			return;
 		}
+		case MSG_WORLD_REQ:
+			if ( host && m_slotOf.count( p.from ) && m_worldRequests.size() < 16 ) m_worldRequests.push_back( p.from );
+			return;
+		case MSG_WORLD_DATA:
+		{
+			if ( host || p.from != m_t->HostId() ) return;
+			WorldData d;
+			uint8_t   ready = 0;
+			uint32_t  n     = 0;
+			r >> ready >> d.level >> d.pos[ 0 ] >> d.pos[ 1 ] >> d.pos[ 2 ] >> n;
+			if ( !r.ok || n > r.n - r.i ) return;
+			d.ready = ready != 0;
+			d.slot.assign( r.p + r.i, r.p + r.i + n );
+			if ( m_worlds.size() < 4 ) m_worlds.push_back( std::move( d ) );
+			Log( "world received (" + std::to_string( n ) + " bytes)" );
+			return;
+		}
+		case MSG_WORLD_READY:
+			if ( !host && p.from == m_t->HostId() ) m_worldReady = true;
+			return;
 		case MSG_POSE:
 		{
 			int8_t   slot = -1;

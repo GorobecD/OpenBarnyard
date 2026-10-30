@@ -50,6 +50,12 @@ struct GameRichPresenceJoinRequested_t
 	uint64_t steamIDFriend;
 	char     rgchConnect[ 256 ];
 };
+struct LobbyInvite_t
+{
+	uint64_t ulSteamIDUser;
+	uint64_t ulSteamIDLobby;
+	uint64_t ulGameID;
+};
 struct GameLobbyJoinRequested_t
 {
 	uint64_t steamIDLobby;
@@ -59,6 +65,7 @@ struct GameLobbyJoinRequested_t
 
 constexpr int CB_GameLobbyJoinRequested = 333;
 constexpr int CB_GameRichPresenceJoinRequested = 337; // "Join game" / accepted invite from the Steam friends list
+constexpr int CB_LobbyInvite            = 503;
 constexpr int CB_LobbyEnter             = 504;
 constexpr int CB_LobbyChatUpdate        = 506;
 constexpr int CB_LobbyCreated           = 513;
@@ -107,6 +114,7 @@ typedef void* Iface;
 	X( const char*, SteamAPI_ISteamFriends_GetFriendPersonaName, ( Iface, uint64_t ) )                      \
 	X( bool, SteamAPI_ISteamFriends_GetFriendGamePlayed, ( Iface, uint64_t, void* ) )                       \
 	X( bool, SteamAPI_ISteamMatchmaking_InviteUserToLobby, ( Iface, uint64_t, uint64_t ) )                  \
+	X( const char*, SteamAPI_ISteamFriends_GetPersonaName, ( Iface ) )                                      \
 	X( void, SteamAPI_SteamNetworkingIdentity_SetSteamID64, ( void*, uint64_t ) )                        \
 	X( uint64_t, SteamAPI_SteamNetworkingIdentity_GetSteamID64, ( void* ) )                              \
 	X( int, SteamAPI_ISteamNetworkingMessages_SendMessageToUser, ( Iface, const void*, const void*, uint32_t, int, int ) ) \
@@ -269,6 +277,20 @@ public:
 		return ok;
 	}
 
+	bool PollInvite( InviteInfo& a_rOut ) override
+	{
+		if ( m_invites.empty() ) return false;
+		a_rOut = m_invites.front();
+		m_invites.erase( m_invites.begin() );
+		return true;
+	}
+
+	std::string LocalName() override
+	{
+		const char* nm = m_ok ? m_api.SteamAPI_ISteamFriends_GetPersonaName( m_friends ) : nullptr;
+		return nm ? nm : "";
+	}
+
 	void OpenInviteDialog() override
 	{
 		if ( m_lobby ) m_api.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog( m_friends, m_lobby );
@@ -423,6 +445,19 @@ private:
 				if ( u->ulSteamIDLobby == m_lobby ) RefreshMembers();
 				break;
 			}
+			case CB_LobbyInvite:
+			{
+				auto* v = (LobbyInvite_t*)p;
+				if ( v->ulSteamIDLobby == m_lobby ) break;
+				InviteInfo inv;
+				inv.from        = v->ulSteamIDUser;
+				const char* nm  = m_api.SteamAPI_ISteamFriends_GetFriendPersonaName( m_friends, v->ulSteamIDUser );
+				inv.fromName    = nm ? nm : "?";
+				inv.lobby       = std::to_string( v->ulSteamIDLobby );
+				if ( m_invites.size() < 8 ) m_invites.push_back( inv );
+				Log( "invite from " + inv.fromName );
+				break;
+			}
 			case CB_GameLobbyJoinRequested:
 			{
 				auto* j = (GameLobbyJoinRequested_t*)p;
@@ -471,6 +506,7 @@ private:
 	bool                m_wantHost = false;
 	int                 m_senderOffset = 0;
 	std::vector<PeerId> m_members;
+	std::vector<InviteInfo> m_invites;
 };
 } // namespace
 
