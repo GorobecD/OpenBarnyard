@@ -20,6 +20,7 @@ namespace
 {
 // ---------------------------------------------------------------- retail
 void** const ppTimeMgr     = (void**)0x00783d3c; // AGameTimeManager
+void** const ppWeather     = (void**)0x00783ecc; // AWeatherManager (current +4, next +8)
 void** const ppRegrowth    = (void**)0x007922e0; // ARegrowthManager
 void** const ppRegrowTypes = (void**)0x007962e8; // ARegrowthManager::ms_pTypes (m_iNumEnums +8)
 void** const ppUnitMgr     = (void**)0x0077e344; // AUnitManager
@@ -71,6 +72,7 @@ enum EvType : uint8_t
 	EV_INV_DELTA, // joiner -> host: inventory and money changes
 	EV_INV,       // host -> all: inventory and money
 	EV_PICK,      // a unit placed in the world (note, recipe...) was picked up
+	EV_DROPPOS,   // where a shared drop is while it flies / rolls
 };
 
 struct Writer
@@ -158,7 +160,20 @@ void SendTime()
 	Writer w;
 	w << (uint8_t)EV_TIME << At<TINT>( tm, TM_YEAR ) << At<TINT>( tm, TM_MONTH ) << At<TINT>( tm, TM_DAY ) << At<TINT>( tm, TM_WEEKDAY ) << At<TINT>( tm, TM_PHASE )
 	  << At<TFLOAT>( tm, TM_DAYTIME ) << At<TFLOAT>( tm, TM_PHASETIME ) << At<TFLOAT>( tm, TM_TOTAL );
+	void* wm = *ppWeather;
+	w << ( wm ? At<TINT>( wm, 4 ) : -1 ) << ( wm ? At<TINT>( wm, 8 ) : -1 );
 	Send( w, false );
+}
+
+void SafeSetWeather( void* wm, TINT a_iWeather )
+{
+	__try
+	{
+		CALL_THIS( 0x0054c550, void*, void, wm, TINT, a_iWeather ); // AWeatherManager::SetCurrentWeather
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
 }
 
 void SafeChangePhase( void* tm, TINT a_iPhase )
@@ -177,6 +192,15 @@ void ApplyTime( Reader& r )
 	TINT   iYear, iMonth, iDay, iWeekDay, iPhase;
 	TFLOAT fDayTime, fPhaseTime, fTotal;
 	r >> iYear >> iMonth >> iDay >> iWeekDay >> iPhase >> fDayTime >> fPhaseTime >> fTotal;
+	TINT iWeather = -1, iNextWeather = -1;
+	Reader rw = r;
+	rw >> iWeather >> iNextWeather;
+	if ( rw.ok && iWeather >= 0 && *ppWeather )
+	{
+		void* wm = *ppWeather;
+		if ( At<TINT>( wm, 4 ) != iWeather ) SafeSetWeather( wm, iWeather );
+		At<TINT>( wm, 8 ) = iNextWeather;
+	}
 	void* tm = *ppTimeMgr;
 	if ( !r.ok || !tm || iPhase < 0 || iPhase > 4 ) return;
 	const bool bDayChanged = At<TINT>( tm, TM_DAY ) != iDay || At<TINT>( tm, TM_MONTH ) != iMonth || At<TINT>( tm, TM_YEAR ) != iYear;
@@ -344,6 +368,7 @@ uint32_t g_uiNextNetId = 1;
 bool     g_bShakeSpawn = false;
 int      g_iPlayers    = 1; // players in the session (bikes)
 double   g_fDropUntil  = 0; // units spawned until then came out of something we broke/shook (shared)
+std::map<uint32_t, double>* g_pOwnDrops = nullptr; // our drops -> spawn time (their position is streamed)
 
 void Track( uint32_t a_uiId, void* a_pUnit )
 {
@@ -424,6 +449,7 @@ void OnSpawned( void* a_pUnit, const TVector4& a_rPos )
 	if ( !a_pUnit || g_bApplying || !g_bActive || Now() > g_fDropUntil || g_pUnitNets->count( a_pUnit ) ) return;
 	uint32_t uiId = ( (uint32_t)( g_iLocalSlot & 0xff ) << 24 ) | ( g_uiNextNetId++ & 0xffffff );
 	Track( uiId, a_pUnit );
+	( *g_pOwnDrops )[ uiId ] = Now();
 	Writer w;
 	w << (uint8_t)EV_DROP << uiId << Level() << a_rPos.x << a_rPos.y << a_rPos.z;
 	w.Str( UnitTypeName( a_pUnit ) );
@@ -436,6 +462,43 @@ const TVector4* UnitPosition( void* a_pUnit )
 	if ( !pSteer ) return nullptr;
 	typedef const TVector4*( __thiscall * t_GetPos )( void* );
 	return ( *(t_GetPos*)( *(char**)pSteer + 0xac ) )( pSteer ); // ASteer::GetPosition
+}
+
+void SendDropPositions()
+{
+	static double s_fNext = 0;
+	if ( Now() < s_fNext ) return;
+	s_fNext = Now() + 0.05;
+	for ( auto it = g_pOwnDrops->begin(); it != g_pOwnDrops->end(); )
+	{
+		auto u = g_pNetUnits->find( it->first );
+		if ( u == g_pNetUnits->end() || Now() - it->second > 5.0 )
+		{
+			it = g_pOwnDrops->erase( it );
+			continue;
+		}
+		const TVector4* p = UnitPosition( u->second );
+		if ( p )
+		{
+			Writer w;
+			w << (uint8_t)EV_DROPPOS << it->first << p->x << p->y << p->z;
+			Send( w, false );
+		}
+		++it;
+	}
+}
+
+void ApplyDropPos( Reader& r )
+{
+	uint32_t uiId;
+	TFLOAT   x, y, z;
+	r >> uiId >> x >> y >> z;
+	auto it = g_pNetUnits->find( uiId );
+	if ( !r.ok || it == g_pNetUnits->end() ) return;
+	void* pSteer = At<void*>( it->second, 0x1c );
+	if ( !pSteer ) return;
+	typedef void( __thiscall * t_SetV )( void*, const TVector4& );
+	( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, TVector4( x, y, z, 1.0f ) ); // ASteer::SetPosition
 }
 
 // a unit placed in the world was picked up here: remove the same one for the others
@@ -518,7 +581,8 @@ bool SafeReadInventory( Counts& a_rOut )
 			char* pRoot = pCat + 0x14;     // TQList root node (m_pNext, m_pPrev)
 			char* pEnd  = pRoot - 4;       // the root seen as an AInventoryItem
 			int   guard = 0;
-			for ( char* pItem = *(char**)pRoot; pItem && pItem != pEnd && guard < 256; pItem = *(char**)( pItem + 4 ), guard++ )
+			// the links point at the TNode inside the item (item + 4), see AInventoryComponent::GetItem 0x623d50
+			for ( char* pItem = *(char**)pRoot - 4; pItem && pItem != pEnd && guard < 256; pItem = *(char**)( pItem + 4 ) - 4, guard++ )
 			{
 				void* pProxy = At<void*>( pItem, 0x0c );
 				void* pUnit  = pProxy ? At<void*>( pProxy, 0x14 ) : nullptr;
@@ -709,6 +773,7 @@ void Handle( const coop::GameEvent& e )
 			break;
 		case EV_DROP: ApplyDrop( r ); break;
 		case EV_PICK: ApplyPick( r ); break;
+		case EV_DROPPOS: ApplyDropPos( r ); break;
 		case EV_GONE: ApplyGone( r ); break;
 		case EV_INV_DELTA:
 			if ( g_bHost ) ApplyInventoryDelta( r );
@@ -809,6 +874,31 @@ MEMBER_HOOK( 0x00410f00, UnitMgrStub, AUnitManager_DestroyUnitImmediate, void, v
 
 struct BikeStub
 {};
+// the game parks one bike per rack (the racks are all over the farm): park ours next to the first one
+void AlignBikes( void* a_pMgr )
+{
+	char*      pBikes = (char*)a_pMgr + 0x20; // Bike[ 56 ] { type, rack, unit, parked }
+	const TINT n      = *(TINT*)( (char*)a_pMgr + 0x544 );
+	if ( n < 2 || g_iPlayers < 2 ) return;
+	void*           pFirst  = *(void**)( pBikes + 8 );
+	void*           pSteer0 = pFirst ? At<void*>( pFirst, 0x1c ) : nullptr;
+	const TVector4* pPos    = UnitPosition( pFirst );
+	if ( !pPos || !pSteer0 || !*(TBOOL*)( pBikes + 0x0c ) ) return;
+	typedef const TVector4*( __thiscall * t_GetV )( void* );
+	typedef void( __thiscall * t_SetV )( void*, const TVector4& );
+	const TVector4* pDir = ( *(t_GetV*)( *(char**)pSteer0 + 0xb8 ) )( pSteer0 );
+	TVector4        vSide( pDir ? -pDir->z : 1.0f, 0.0f, pDir ? pDir->x : 0.0f, 0.0f );
+	for ( TINT i = 1; i < n; i++ )
+	{
+		if ( !*(TBOOL*)( pBikes + i * 0x10 + 0x0c ) ) continue; // ridden / left somewhere
+		void* pBike  = *(void**)( pBikes + i * 0x10 + 8 );
+		void* pSteer = pBike ? At<void*>( pBike, 0x1c ) : nullptr;
+		if ( !pSteer ) continue;
+		TVector4 v( pPos->x + vSide.x * 1.6f * i, pPos->y, pPos->z + vSide.z * 1.6f * i, 1.0f );
+		( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, v );
+		if ( pDir ) ( *(t_SetV*)( *(char**)pSteer + 0x8c ) )( pSteer, *pDir );
+	}
+}
 // ABikeManager::SpawnBikesAtRacks (ASimState spawns 1): one bike per player
 MEMBER_HOOK( 0x00540a10, BikeStub, ABikeManager_SpawnBikesAtRacks, void, TINT a_iNumBikes )
 {
@@ -818,28 +908,13 @@ MEMBER_HOOK( 0x00540a10, BikeStub, ABikeManager_SpawnBikesAtRacks, void, TINT a_
 		Log( "bikes: " + std::to_string( a_iNumBikes ) );
 	}
 	CallOriginal( a_iNumBikes );
-	// the game puts the other bikes at the other racks (all over the farm): put them next to the first one
-	char* pBikes = (char*)this + 0x20; // Bike[ 56 ] { type, rack, unit, parked }
-	const TINT n = *(TINT*)( (char*)this + 0x544 );
-	void* pFirst = n > 0 ? *(void**)( pBikes + 8 ) : nullptr;
-	const TVector4* pPos = UnitPosition( pFirst );
-	void* pSteer0 = pFirst ? At<void*>( pFirst, 0x1c ) : nullptr;
-	if ( pPos && pSteer0 )
-	{
-		typedef const TVector4*( __thiscall * t_GetV )( void* );
-		typedef void( __thiscall * t_SetV )( void*, const TVector4& );
-		const TVector4* pDir = ( *(t_GetV*)( *(char**)pSteer0 + 0xb8 ) )( pSteer0 );
-		TVector4 vSide( pDir ? -pDir->z : 1.0f, 0.0f, pDir ? pDir->x : 0.0f, 0.0f );
-		for ( TINT i = 1; i < n; i++ )
-		{
-			void* pBike  = *(void**)( pBikes + i * 0x10 + 8 );
-			void* pSteer = pBike ? At<void*>( pBike, 0x1c ) : nullptr;
-			if ( !pSteer ) continue;
-			TVector4 v( pPos->x + vSide.x * 1.6f * i, pPos->y, pPos->z + vSide.z * 1.6f * i, 1.0f );
-			( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, v );
-			if ( pDir ) ( *(t_SetV*)( *(char**)pSteer + 0x8c ) )( pSteer, *pDir );
-		}
-	}
+	AlignBikes( this );
+}
+// ABikeManager::RespawnBikes: every 2 s the parked bikes go back to the racks closest to the player
+MEMBER_HOOK( 0x00540410, BikeStub, ABikeManager_RespawnBikes, void, TFLOAT a_fDelta, TBOOL a_bForce )
+{
+	CallOriginal( a_fDelta, a_bForce );
+	AlignBikes( this );
 }
 
 struct InventoryStub
@@ -859,8 +934,19 @@ MEMBER_HOOK( 0x006247d0, InventoryStub, AInventoryComponent_AddUnit, TBOOL, void
 {
 	uint32_t uiId;
 	if ( a_pUnit && g_pUnitNets && Untrack( a_pUnit, uiId ) && !g_bApplying ) SendGone( uiId );
-	else if ( a_pUnit && g_bActive && !g_bApplying && IsPlayerCategory( this ) ) SendPick( a_pUnit ); // placed in the world
 	return CallOriginal( a_pUnit, a_iCount, a_strInventory );
+}
+
+// AInventoryGroupComponent::CollectUnit (static, __stdcall): our cow picked a unit up
+HOOK( 0x00625c10, AInventoryGroupComponent_CollectUnit, TBOOL, void* a_pUnit, void* a_pParentState )
+{
+	uint32_t uiId;
+	if ( a_pUnit && g_pUnitNets && g_bActive && !g_bApplying )
+	{
+		if ( Untrack( a_pUnit, uiId ) ) SendGone( uiId ); // shared drop
+		else SendPick( a_pUnit );                          // placed in the world (notes, recipes, items...)
+	}
+	return CallOriginal( a_pUnit, a_pParentState );
 }
 
 void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::function<void( const std::string& )> a_fnLog )
@@ -872,6 +958,7 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	g_pNetUnits     = new std::map<uint32_t, void*>();
 	g_pUnitNets     = new std::map<void*, uint32_t>();
 	g_pBaseline     = new Counts();
+	g_pOwnDrops     = new std::map<uint32_t, double>();
 	InstallHook<ARegrowthManager_TakeObject>();
 	InstallHook<ARegrowthManager_TakeRandomObject>();
 	InstallHook<ARegrowthManager_GrowObjects>();
@@ -882,7 +969,9 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<AUnitManager_SpawnUnitTransform>();
 	InstallHook<AUnitManager_DestroyUnitImmediate>();
 	InstallHook<AInventoryComponent_AddUnit>();
+	InstallHook<AInventoryGroupComponent_CollectUnit>();
 	InstallHook<ABikeManager_SpawnBikesAtRacks>();
+	InstallHook<ABikeManager_RespawnBikes>();
 }
 
 void WorldSync::Update( bool a_bInWorld )
@@ -898,7 +987,7 @@ void WorldSync::Update( bool a_bInWorld )
 		g_bHostSameLevel   = false;
 		for ( auto& [ slot, rp ] : g_pSession->Remotes() )
 			if ( slot == 0 && rp.hasPose && rp.b.levelHash == RemotePuppets::CurrentLevel() ) g_bHostSameLevel = true;
-		a_bInWorld   = a_bInWorld && bShared && *pMainGameLoaded;
+		a_bInWorld   = a_bInWorld && bShared; // (also in the barn, where the main game flag is off)
 	}
 	if ( a_bInWorld != g_bActive )
 	{
@@ -933,6 +1022,7 @@ void WorldSync::Update( bool a_bInWorld )
 		SendRegrowth();
 	}
 	UpdateInventory();
+	SendDropPositions();
 
 	for ( auto it = g_pRecentTakes->begin(); it != g_pRecentTakes->end(); )
 		if ( now - it->second > 10.0 ) it = g_pRecentTakes->erase( it );
