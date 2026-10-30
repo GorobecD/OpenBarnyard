@@ -716,7 +716,8 @@ void UpdateInventory()
 		s_fNextFull = Now() + 10.0;
 		SendInventory( now, iMoney );
 	}
-	if ( now == *g_pBaseline && iMoney == g_iBaseMoney ) return;
+	// joiner: money changes go to the host as they happen (see the APlayerSimProfile hooks)
+	if ( now == *g_pBaseline && ( iMoney == g_iBaseMoney || !g_bHost ) ) return;
 	if ( g_bHost )
 	{
 		SendInventory( now, iMoney ); // our inventory is the shared one
@@ -725,7 +726,7 @@ void UpdateInventory()
 	{
 		// what we picked up / used since we last matched the host
 		Writer w;
-		w << (uint8_t)EV_INV_DELTA << (int32_t)( iMoney - g_iBaseMoney );
+		w << (uint8_t)EV_INV_DELTA << (int32_t)0;
 		Counts diff;
 		for ( auto& [ k, v ] : now )
 			if ( v != ( g_pBaseline->count( k ) ? ( *g_pBaseline )[ k ] : 0 ) ) diff[ k ] = v - ( g_pBaseline->count( k ) ? ( *g_pBaseline )[ k ] : 0 );
@@ -777,7 +778,12 @@ void ApplyInventory( Reader& r ) // joiner: become the host's inventory
 		if ( ( now.count( k ) ? now[ k ] : 0 ) != v ) ChangeItems( k, v - ( now.count( k ) ? now[ k ] : 0 ) );
 	for ( auto& [ k, v ] : now )
 		if ( !host.count( k ) ) ChangeItems( k, -v );
-	if ( Money() != iMoney ) SafeSetMoney( iMoney );
+	if ( Money() != iMoney )
+	{
+		g_bApplying = true;
+		SafeSetMoney( iMoney );
+		g_bApplying = false;
+	}
 	// whatever we have now matches the host
 	Counts after;
 	SafeReadInventory( after );
@@ -969,6 +975,33 @@ MEMBER_HOOK( 0x006247d0, InventoryStub, AInventoryComponent_AddUnit, TBOOL, void
 	return CallOriginal( a_pUnit, a_iCount, a_strInventory );
 }
 
+// Money: what the joiner earns / spends goes to the host (its money is everyone's)
+void SendMoneyDelta( int a_iDelta )
+{
+	if ( !a_iDelta || !g_bActive || g_bHost || g_bApplying ) return;
+	Writer w;
+	w << (uint8_t)EV_INV_DELTA << (int32_t)a_iDelta << (uint16_t)0;
+	Send( w, true );
+	Log( "money: " + std::to_string( a_iDelta ) + " sent to the host" );
+}
+struct ProfileStub
+{};
+MEMBER_HOOK( 0x00621170, ProfileStub, APlayerSimProfile_AddPickups, void, TINT a_iPickups )
+{
+	SendMoneyDelta( a_iPickups );
+	CallOriginal( a_iPickups );
+}
+MEMBER_HOOK( 0x006211e0, ProfileStub, APlayerSimProfile_AddPickupsToTarget, void, TINT a_iPickups )
+{
+	SendMoneyDelta( a_iPickups );
+	CallOriginal( a_iPickups );
+}
+MEMBER_HOOK( 0x00620f80, ProfileStub, APlayerSimProfile_SetPickups, void, TINT a_iPickups, TBOOL a_bCountUp, TBOOL a_bUpdateHud )
+{
+	SendMoneyDelta( a_iPickups - *(TINT*)( (char*)this + PROFILE_PICKUPS ) );
+	CallOriginal( a_iPickups, a_bCountUp, a_bUpdateHud );
+}
+
 // ACoinSpawner::SpawnCoin (static, __stdcall): coins out of a crate
 HOOK( 0x0066ef10, ACoinSpawner_SpawnCoin, void, void* a_pType, const TVector4& a_rPos )
 {
@@ -1011,6 +1044,9 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<AInventoryComponent_AddUnit>();
 	InstallHook<AInventoryGroupComponent_CollectUnit>();
 	InstallHook<ACoinSpawner_SpawnCoin>();
+	InstallHook<APlayerSimProfile_AddPickups>();
+	InstallHook<APlayerSimProfile_AddPickupsToTarget>();
+	InstallHook<APlayerSimProfile_SetPickups>();
 	InstallHook<ABikeManager_SpawnBikesAtRacks>();
 	InstallHook<ABikeManager_RespawnBikes>();
 }
