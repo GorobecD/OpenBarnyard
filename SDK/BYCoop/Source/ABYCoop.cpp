@@ -10,6 +10,7 @@
 #include "CoopFlow.h"
 #include "WorldSync.h"
 #include "NativeMenu.h"
+#include <cstring>
 
 #include <AImGUI.h>
 #include <ModLoader.h>
@@ -70,6 +71,31 @@ double NowSeconds()
 	return double( c.QuadPart ) / double( f.QuadPart );
 }
 
+// On a bike: ABikeSteer (vtable 0x007250c8) with its APhysicsBike at +0xc4; the body (ARigidBody at
+// +0x04) has the orientation at +0x138 and the velocity at +0x148, see OpenBarnyard Physics/.
+void ReadBike( void* a_pSteer, coop::Pose& out )
+{
+	char* pSteer = (char*)a_pSteer;
+	char* pPhys  = *(char**)( pSteer + 0xc4 );
+	out.flags    = 1;
+	out.speed    = *(float*)( pSteer + 0x30 ); // ABikeSteer::m_fSpeed
+	out.trick    = (uint8_t)*(TINT*)( pSteer + 0x70 );
+	out.bikeBits = ( *(TBOOL*)( pSteer + 0x74 ) ? 1 : 0 ) | ( *(TBOOL*)( pSteer + 0x82 ) ? 2 : 0 ) | ( *(TBOOL*)( pSteer + 0x78 ) ? 4 : 0 );
+	char* pMgr   = *(char**)0x00783c70; // ABikeManager
+	const TINT iType = pMgr ? *(TINT*)( pMgr + 0x608 ) : 0;
+	out.bikeType = (uint8_t)( iType < 0 ? 0 : iType );
+	typedef const TVector4*( __thiscall * t_GetDir )( void* );
+	const TVector4* pDir = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer );
+	if ( pDir && ( pDir->x != 0.0f || pDir->z != 0.0f ) ) out.yaw = std::atan2( pDir->x, pDir->z );
+	if ( !pPhys ) return;
+	memcpy( out.rot, pPhys + 4 + 0x138, 16 );
+	memcpy( out.vel, pPhys + 4 + 0x148, 12 );
+	out.steerAngle     = *(float*)( pPhys + 0xcc0 );
+	out.wheelSpin[ 0 ] = *(float*)( pPhys + 0x2a8 + 0x68 );
+	out.wheelSpin[ 1 ] = *(float*)( pPhys + 0x2a8 + 0xec + 0x68 );
+	out.gear           = (uint8_t)*(TINT*)( pPhys + 0x658 );
+}
+
 // Reads the local cow (player slot 0 of the current player set).
 bool ReadLocalPose( coop::Pose& out )
 {
@@ -92,12 +118,7 @@ bool ReadLocalPose( coop::Pose& out )
 	out.flags = 0;
 	if ( *(void**)pSteer == (void*)0x007250c8 ) // ABikeSteer: on a bike
 	{
-		typedef TFLOAT( __thiscall * t_GetF )( void* );
-		typedef const TVector4*( __thiscall * t_GetDir )( void* );
-		out.flags = 1;
-		out.speed = ( *(t_GetF*)( *(char**)pSteer + 0xc4 ) )( pSteer ); // ABikeSteer::GetSpeed
-		const TVector4* pDir = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer ); // ABikeSteer::GetDirection (own, no kinematics)
-		if ( pDir && ( pDir->x != 0.0f || pDir->z != 0.0f ) ) out.yaw = std::atan2( pDir->x, pDir->z );
+		ReadBike( pSteer, out );
 		return true;
 	}
 	if ( !( *(t_GetKin*)( *(char**)pSteer + 0x114 ) )( pSteer ) )

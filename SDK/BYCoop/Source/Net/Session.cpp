@@ -46,6 +46,23 @@ Pose RemotePlayer::Sample( double now, double delay ) const
 	Pose  r = b;
 	for ( int i = 0; i < 3; ++i ) r.pos[ i ] = a.pos[ i ] + ( b.pos[ i ] - a.pos[ i ] ) * k;
 	r.yaw = LerpAngle( a.yaw, b.yaw, k );
+	if ( ( a.flags & 1 ) && ( b.flags & 1 ) )
+	{
+		// nlerp of the bike's orientation (shortest way)
+		float d = a.rot[ 0 ] * b.rot[ 0 ] + a.rot[ 1 ] * b.rot[ 1 ] + a.rot[ 2 ] * b.rot[ 2 ] + a.rot[ 3 ] * b.rot[ 3 ];
+		float s = d < 0 ? -1.0f : 1.0f, len = 0;
+		for ( int i = 0; i < 4; ++i )
+		{
+			r.rot[ i ] = a.rot[ i ] * ( 1 - k ) + b.rot[ i ] * s * k;
+			len += r.rot[ i ] * r.rot[ i ];
+		}
+		len = std::sqrt( len );
+		if ( len > 1e-6f )
+			for ( int i = 0; i < 4; ++i ) r.rot[ i ] /= len;
+		for ( int i = 0; i < 3; ++i ) r.vel[ i ] = a.vel[ i ] + ( b.vel[ i ] - a.vel[ i ] ) * k;
+		r.speed      = a.speed + ( b.speed - a.speed ) * k;
+		r.steerAngle = a.steerAngle + ( b.steerAngle - a.steerAngle ) * k;
+	}
 	return r;
 }
 

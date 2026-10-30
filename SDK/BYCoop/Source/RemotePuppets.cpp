@@ -37,6 +37,7 @@ struct Puppet
 	bool   bRideShown   = false;
 	double fRideFailed  = -100.0;
 	void*  pTakenBike   = nullptr; // our parked bike hidden while this player rides it
+	int    iRideType    = -1;      // bike model of pRide
 	TVector4 vRidePos, vRideDir;
 };
 // by slot. Allocated on first use: a global std::map allocates in its constructor, which runs
@@ -187,24 +188,98 @@ void* SafeSpawnRide( void* a_pMgr, const char* a_szType, UnitTransform* a_pTrans
 	}
 }
 
-bool SafeMoveRide( void* a_pUnit, const TVector4& a_rPos, const TVector4& a_rDir, TFLOAT a_fSpeed )
+// The bike follows the rider's physics state: the body is put where the network says (position,
+// orientation, velocity), the wheels/gear/steering/trick are copied, our physics keeps the wheel
+// contacts (dust, tyre tracks) up to date, and the steer's own sounds and effects run.
+bool SafeMoveRide( void* a_pUnit, const coop::Pose& a_rP, const TVector4& a_rPos, const TVector4& a_rDir, TFLOAT a_fDelta, bool a_bEffects )
 {
 	__try
 	{
-		void* pSteer = Steer( a_pUnit );
+		char* pSteer = (char*)Steer( a_pUnit );
 		if ( !pSteer ) return false;
-		FreezeRide( pSteer ); // our positions drive it, not its physics
-		( *(t_SetVec*)( *(char**)pSteer + VT_SETPOSITION ) )( pSteer, a_rPos );
-		typedef void( __thiscall * t_SetDir )( void*, const TVector4& );
-		( *(t_SetDir*)( *(char**)pSteer + VT_SETDIRECTION ) )( pSteer, a_rDir );
-		typedef void( __thiscall * t_SetF )( void*, TFLOAT );
-		( *(t_SetF*)( *(char**)pSteer + VT_SETSPEED ) )( pSteer, a_fSpeed ); // ABikeSteer::m_fSpeed: pedalling animation
+		char* pPhys = *(char**)( pSteer + 0xc4 );
+		( *(t_SetVec*)( *(char**)pSteer + VT_SETPOSITION ) )( pSteer, a_rPos ); // + collision object, Stop()
+		if ( !pPhys ) return true;
+		const bool bMoving = a_rP.vel[ 0 ] * a_rP.vel[ 0 ] + a_rP.vel[ 1 ] * a_rP.vel[ 1 ] + a_rP.vel[ 2 ] * a_rP.vel[ 2 ] > 0.01f;
+		CALL_THIS( 0x0065f560, void*, void, pPhys, TBOOL, bMoving ? TFALSE : TTRUE ); // APhysicsVehicle::SetFrozen
+		float q[ 4 ] = { a_rP.rot[ 0 ], a_rP.rot[ 1 ], a_rP.rot[ 2 ], a_rP.rot[ 3 ] };
+		if ( q[ 0 ] == 0 && q[ 1 ] == 0 && q[ 2 ] == 0 && q[ 3 ] == 0 ) q[ 3 ] = 1;
+		CALL_THIS( 0x00658eb0, void*, void, pPhys + 4, const float*, q, TBOOL, TTRUE ); // ARigidBody::SetOrientation
+		*(TVector4*)( pPhys + 4 + 0x148 ) = TVector4( a_rP.vel[ 0 ], a_rP.vel[ 1 ], a_rP.vel[ 2 ], 0.0f );
+		*(float*)( pPhys + 0xcc0 )                = a_rP.steerAngle;
+		*(float*)( pPhys + 0x2a8 + 0x68 )         = a_rP.wheelSpin[ 0 ];
+		*(float*)( pPhys + 0x2a8 + 0xec + 0x68 )  = a_rP.wheelSpin[ 1 ];
+		*(TINT*)( pPhys + 0x658 )                 = a_rP.gear;
+		*(float*)( pSteer + 0x30 )  = a_rP.speed; // m_fSpeed: pedalling / flapping animations
+		*(TINT*)( pSteer + 0x70 )   = a_rP.trick;
+		*(TBOOL*)( pSteer + 0x74 )  = ( a_rP.bikeBits & 1 ) ? TTRUE : TFALSE;
+		*(TBOOL*)( pSteer + 0x82 )  = ( a_rP.bikeBits & 2 ) ? TTRUE : TFALSE;
+		*(TBOOL*)( pSteer + 0x78 )  = ( a_rP.bikeBits & 4 ) ? TTRUE : TFALSE;
+		CALL_THIS( 0x0055b450, void*, void, pSteer, TFLOAT, a_fDelta ); // ABikeSteer::UpdateSounds (engine, skid)
+		if ( a_bEffects ) CALL_THIS( 0x0055b880, void*, void, pSteer, TFLOAT, a_fDelta ); // UpdateEffects (dust, tracks, lights)
 		return true;
 	}
 	__except ( EXCEPTION_EXECUTE_HANDLER )
 	{
 		return false;
 	}
+}
+
+// off the bike: engine and skid sounds stop, the lights go out, the unit waits at 0,0,0
+void SafeParkRide( void* a_pUnit )
+{
+	__try
+	{
+		char* pSteer = (char*)Steer( a_pUnit );
+		if ( !pSteer ) return;
+		char* pPhys = *(char**)( pSteer + 0xc4 );
+		if ( pPhys ) *(TINT*)( pPhys + 0x658 ) = 1; // neutral: UpdateSounds stops the engine
+		*(TBOOL*)( pSteer + 0x82 ) = TFALSE;
+		*(TBOOL*)( pSteer + 0x78 ) = TTRUE; // "in water": UpdateEffects kills the lights
+		CALL_THIS( 0x0055b450, void*, void, pSteer, TFLOAT, 0.0f );
+		CALL_THIS( 0x0055b880, void*, void, pSteer, TFLOAT, 0.0f );
+		*(TBOOL*)( pSteer + 0x78 ) = TFALSE;
+		( *(t_SetVec*)( *(char**)pSteer + VT_SETPOSITION ) )( pSteer, TVector4( 0.0f, 0.0f, 0.0f, 1.0f ) );
+		if ( pPhys ) CALL_THIS( 0x0065f560, void*, void, pPhys, TBOOL, TTRUE );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+
+// The bike models bike1..bike5: retail loads only the best one the player has (ABikeManager::
+// LoadBikeAssets 0x540280); another player's one is loaded the same way from the level's asset pack.
+bool SafeBikeTypeLoaded( int a_iType )
+{
+	__try
+	{
+		char* pMgr = (char*)*ppBikeManager;
+		if ( !pMgr || a_iType < 0 || a_iType > 4 ) return false;
+		void* pName = pMgr + 0x5a8 + a_iType * 4; // TPString8 m_aBikeTypes[ 5 ]
+		return CALL_THIS( 0x0057d820, void*, void*, *(void**)0x007899b8, void*, pName ) != nullptr; // AAnimatableObjectManager::FindType
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+bool SafeLoadBikeType( int a_iType )
+{
+	__try
+	{
+		char* pMgr = (char*)*ppBikeManager;
+		void* pTRB = *(void**)0x0077dd60; // AAssetLoader: the asset pack of the level
+		if ( !pMgr || !pTRB || a_iType < 0 || a_iType > 4 ) return false;
+		void* pName = pMgr + 0x5a8 + a_iType * 4;
+		CALL_THIS( 0x00614a00, void*, void, *(void**)0x007b4660, void*, pName, void*, pTRB, TBOOL, TTRUE ); // AMaterialLibraryManager::LoadLibrary
+		CALL_THIS( 0x00607030, void*, void, *(void**)0x0079b118, void*, pName, void*, pTRB );               // AKeyFrameLibraryManager::LoadLibrary
+		CALL_THIS( 0x0057e550, void*, void, *(void**)0x007899b8, void*, pName, void*, nullptr, TBOOL, TFALSE ); // AAnimatableObjectManager::LoadAnimObjType
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+	return SafeBikeTypeLoaded( a_iType );
 }
 
 // our bikes: { type, rack, unit, parked } at +0x20, count +0x544
@@ -274,7 +349,7 @@ void HideRide( Puppet& a_rPP, const std::function<void( const std::string& )>& a
 	if ( !a_rPP.bRideShown ) return;
 	a_rPP.bRideShown = false;
 	SafeSetVisible( a_rPP.pRide, false );
-	SafeMoveRide( a_rPP.pRide, TVector4( 0.0f, 0.0f, 0.0f, 1.0f ), TVector4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.0f );
+	SafeParkRide( a_rPP.pRide );
 	if ( a_rPP.pTakenBike )
 	{
 		SafePlaceBike( a_rPP.pTakenBike, a_rPP.vRidePos, a_rPP.vRideDir );
@@ -284,10 +359,15 @@ void HideRide( Puppet& a_rPP, const std::function<void( const std::string& )>& a
 	a_fnLog( std::string( "puppet off the bike: " ) + a_rPP.szName );
 }
 
-void SpawnRide( int a_iSlot, Puppet& a_rPP, const coop::RemotePlayer& a_rRP, const TVector4& a_rPos, const TVector4& a_rDir, int a_iOwnGender, double a_fNow,
+void SpawnRide( int a_iSlot, Puppet& a_rPP, const coop::RemotePlayer& a_rRP, int a_iWantedType, const TVector4& a_rPos, const TVector4& a_rDir, int a_iOwnGender, double a_fNow,
                 const std::function<void( const std::string& )>& a_fnLog )
 {
-	const int iBikeType = LoadedBikeType();
+	int iBikeType = a_iWantedType;
+	if ( !SafeBikeTypeLoaded( iBikeType ) && !SafeLoadBikeType( iBikeType ) )
+	{
+		a_fnLog( "bike" + std::to_string( iBikeType + 1 ) + " not loadable, using ours" );
+		iBikeType = LoadedBikeType();
+	}
 	if ( iBikeType < 0 || !*ppUnitManager )
 	{
 		a_rPP.fRideFailed = a_fNow;
@@ -314,6 +394,7 @@ void SpawnRide( int a_iSlot, Puppet& a_rPP, const coop::RemotePlayer& a_rRP, con
 	ApplyHide( pUnit, a_rRP.look.gender, a_rRP.look.hide, a_iOwnGender, a_fnLog, g_bAltModelUsed );
 	SafeSetVisible( pUnit, false );
 	a_rPP.pRide      = pUnit;
+	a_rPP.iRideType  = iBikeType;
 	a_rPP.bRideShown = false;
 	a_fnLog( std::string( "ride puppet spawned: " ) + a_rPP.szName + " bike" + std::to_string( iBikeType + 1 ) );
 }
@@ -376,6 +457,9 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 
 	char* pProfiles  = *(char**)0x007b493c;
 	const int iOwnG  = pProfiles ? *(TINT*)( pProfiles + 0x10 ) : -1;
+	static double s_fLastUpdate = a_fNow;
+	const TFLOAT  fDelta        = (TFLOAT)( a_fNow - s_fLastUpdate > 0.1 ? 0.1 : a_fNow - s_fLastUpdate );
+	s_fLastUpdate               = a_fNow;
 
 	// diagnostics every 5 s: why a remote cow is (not) there
 	static double s_fNextDiag = 0;
@@ -457,7 +541,9 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		// on a bike: the cow-on-a-bike unit instead of the cow
 		if ( p.flags & 1 )
 		{
-			if ( !pp.pRide && a_fNow - pp.fRideFailed > 10.0 ) SpawnRide( slot, pp, rp, vPos, vDir, iOwnG, a_fNow, a_fnLog );
+			// another bike model than the one this unit carries: a new unit (the old one stays parked)
+			if ( pp.pRide && pp.iRideType != p.bikeType && pp.iRideType != LoadedBikeType() && !pp.bRideShown ) pp.pRide = nullptr;
+			if ( !pp.pRide && a_fNow - pp.fRideFailed > 10.0 ) SpawnRide( slot, pp, rp, p.bikeType, vPos, vDir, iOwnG, a_fNow, a_fnLog );
 			if ( pp.pRide )
 			{
 				if ( !pp.bRideShown )
@@ -474,7 +560,7 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 				}
 				pp.vRidePos = vPos;
 				pp.vRideDir = vDir;
-				if ( !SafeMoveRide( pp.pRide, vPos, vDir, p.speed ) )
+				if ( !SafeMoveRide( pp.pRide, p, vPos, vDir, fDelta, true ) )
 				{
 					a_fnLog( "ride puppet: move failed" );
 					pp.pRide       = nullptr; // leave it, don't touch it again
@@ -560,12 +646,20 @@ MEMBER_HOOK( 0x006127f0, AModelReposStub, AModelRepos_InstantiateModel, void*, v
 	return CallOriginal( a_pModel );
 }
 
-// ABikeSteer::Update: a ride puppet only goes where the network says (no physics, input, sounds)
+// ABikeSteer::Update: a ride puppet only goes where the network says (no input, no AI); its sounds
+// and effects are run by SafeMoveRide
 struct ABikeSteerStub
 {};
 MEMBER_HOOK( 0x0055c630, ABikeSteerStub, ABikeSteer_Update, TBOOL, TFLOAT a_fDeltaTime )
 {
-	if ( RemotePuppets::IsRideSteer( this ) ) return TTRUE;
+	for ( auto& kv : g_oPuppets )
+		if ( kv.second.pRide && Steer( kv.second.pRide ) == (void*)this )
+		{
+			// as the original: the cameras skip the cow on the bike (AVisibleUnit::m_pCollisionObject +0x70, type +0x1c)
+			char* pColl = *(char**)( (char*)kv.second.pRide + 0x70 );
+			if ( pColl ) *(TUINT*)( pColl + 0x1c ) |= 0x800; // TYPE_IGNORED
+			return TTRUE;
+		}
 	return CallOriginal( a_fDeltaTime );
 }
 

@@ -9,7 +9,7 @@
 namespace coop
 {
 
-constexpr uint32_t PROTOCOL_VERSION = 3; // 2: Pose::levelHash = terrain id + 1, 3: world transfer
+constexpr uint32_t PROTOCOL_VERSION = 4; // 2: Pose::levelHash = terrain id + 1, 3: world transfer, 4: bike state in Pose
 constexpr int      MAX_PLAYERS      = 4;
 
 // What the player picked in the character creator (AFrontEndCharacterSelectState).
@@ -29,6 +29,15 @@ struct Pose
 	uint16_t anim     = 0;   // engine animation id, 0 = idle
 	uint16_t flags    = 0;   // bit0 riding, bit1 swimming, bit2 in minigame...
 	uint32_t levelHash = 0;  // which map the player is in; remote cows only show on the same map
+	// on a bike (flags bit0): the bike's physics as the rider has it
+	float    rot[ 4 ]     = { 0, 0, 0, 1 }; // orientation of the body (lean, pitch, wheelies)
+	float    vel[ 3 ]     = {};
+	float    steerAngle   = 0;   // front wheel
+	float    wheelSpin[ 2 ] = {}; // angular velocity of the wheels
+	uint8_t  gear         = 1;
+	uint8_t  trick        = 0;   // ABikeSteer::m_iTrickState
+	uint8_t  bikeBits     = 0;   // bit0 airborne, bit1 skidding, bit2 in water
+	uint8_t  bikeType     = 0;   // bike1..bike5
 };
 
 enum MsgType : uint8_t
