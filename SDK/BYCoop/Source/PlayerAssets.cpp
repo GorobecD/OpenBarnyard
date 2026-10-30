@@ -73,68 +73,77 @@ bool Matlib( int a_iGender, int a_iCostume, bool a_bLoad )
 }
 
 // Replays the retail loader/unloader as if the profile had a_iGender/a_iCostume
-bool ReplayAs( t_PlayerChar a_pfn, int a_iGender, int a_iCostume )
+bool ReplayAs( t_PlayerChar a_pfn, const void* a_pProp, int a_iGender, int a_iCostume )
 {
 	const TINT iG = ProfGender(), iC = ProfCostume(), iL = *pLoadedCostume;
 	ProfGender()    = a_iGender;
 	ProfCostume()   = a_iCostume;
 	*pLoadedCostume = a_iCostume;
-	const bool bOk  = SafeCall( a_pfn, g_pProp );
+	const bool bOk  = SafeCall( a_pfn, a_pProp );
 	ProfGender()    = iG;
 	ProfCostume()   = iC;
 	*pLoadedCostume = iL;
 	return bOk;
 }
 
+// Runtime: hides of the other gender the remote players use (material libraries are plain files).
+// The models/animations of the other gender are loaded with the level (PreloadOtherGender): the
+// level's property tree is only valid during loading (a runtime replay of the loader crashed).
 void LoadWanted()
 {
-	if ( !g_pProp || g_bFailed ) return;
+	if ( !g_pProp || g_bFailed || g_iOtherCostume < 0 ) return;
 	for ( int i = 0; i < g_iWant; i++ )
 	{
 		const int g = g_aWantG[ i ], c = g_aWantC[ i ];
-		if ( g < 0 || g > 1 || c < 0 || c >= NUM_COSTUMES || PlayerAssets::IsLoaded( g, c ) ) continue;
-		if ( g == g_iOwnGender ) continue; // same model as ours: its hide can't differ (shared material)
-		bool bOk;
-		if ( g != g_iOwnGender && g_iOtherCostume < 0 )
-		{
-			// models, animations and this costume of the other gender
-			bOk = ReplayAs( g_pfnLoad, g, c );
-			if ( bOk ) g_iOtherCostume = c;
-			Log( std::string( "assets: loaded " ) + ( g ? "female" : "male" ) + " cow, hide " + std::to_string( c ) + ( bOk ? "" : " FAILED" ) );
-		}
-		else
-		{
-			bOk = Matlib( g, c, true );
-			if ( bOk ) g_aMatlib[ g ][ c ] = true;
-			Log( "assets: loaded hide " + std::to_string( c ) + ( g ? " (female)" : " (male)" ) + ( bOk ? "" : " FAILED" ) );
-		}
-		if ( !bOk ) g_bFailed = true; // never retry a crashing load in this level
+		if ( g != 1 - g_iOwnGender || c < 0 || c >= NUM_COSTUMES || PlayerAssets::IsLoaded( g, c ) ) continue;
+		const bool bOk = Matlib( g, c, true );
+		if ( bOk ) g_aMatlib[ g ][ c ] = true;
+		else g_bFailed = true; // never retry a crashing load in this level
+		Log( "assets: loaded hide " + std::to_string( c ) + ( g ? " (female)" : " (male)" ) + ( bOk ? "" : " FAILED" ) );
 	}
 }
 
-void UnloadExtras()
+// Level load: models and animations of the other gender, always (a friend may join or pick the
+// gender later), with the hide a remote player of that gender uses if known
+void PreloadOtherGender( const void* a_pProp )
+{
+	if ( g_iOwnGender < 0 || g_iOwnGender > 1 ) return;
+	const int g = 1 - g_iOwnGender;
+	int       c = g_iOwnCostume >= 0 && g_iOwnCostume < NUM_COSTUMES ? g_iOwnCostume : 0;
+	for ( int i = 0; i < g_iWant; i++ )
+		if ( g_aWantG[ i ] == g && g_aWantC[ i ] >= 0 && g_aWantC[ i ] < NUM_COSTUMES ) c = g_aWantC[ i ];
+	const bool bOk = ReplayAs( g_pfnLoad, a_pProp, g, c );
+	if ( bOk ) g_iOtherCostume = c;
+	else g_bFailed = true;
+	Log( std::string( "assets: loaded " ) + ( g ? "female" : "male" ) + " cow, hide " + std::to_string( c ) + ( bOk ? "" : " FAILED" ) );
+}
+
+void UnloadExtras( const void* a_pProp )
 {
 	for ( int g = 0; g < 2; g++ )
 		for ( int c = 0; c < NUM_COSTUMES; c++ )
 			if ( g_aMatlib[ g ][ c ] ) Matlib( g, c, false );
-	if ( g_iOtherCostume >= 0 ) ReplayAs( g_pfnUnload, 1 - g_iOwnGender, g_iOtherCostume );
+	if ( g_iOtherCostume >= 0 ) ReplayAs( g_pfnUnload, a_pProp, 1 - g_iOwnGender, g_iOtherCostume );
 	memset( g_aMatlib, 0, sizeof( g_aMatlib ) );
 	g_iOtherCostume = -1;
 	g_pProp         = nullptr;
 	g_bFailed       = false;
 	Log( "assets: extra player assets released" );
 }
+int g_iDepth = 0; // nested player-character loads (minigames) only use the outer level's extras
 } // namespace
 
 HOOK( 0x00424a20, AAssetLoader_LoadPlayerCharacter, TBOOL, const void* a_pProperty )
 {
-	g_pfnLoad   = (t_PlayerChar)AAssetLoader_LoadPlayerCharacter::_orig_func_ptr;
-	TBOOL bRes  = CallOriginal( a_pProperty );
-	if ( bRes && a_pProperty && !g_pProp && *ppProfiles ) // nested loads (minigames) keep the outer level's set
+	g_pfnLoad  = (t_PlayerChar)AAssetLoader_LoadPlayerCharacter::_orig_func_ptr;
+	TBOOL bRes = CallOriginal( a_pProperty );
+	if ( !bRes || !a_pProperty || !*ppProfiles ) return bRes;
+	if ( ++g_iDepth == 1 )
 	{
 		g_pProp       = a_pProperty;
 		g_iOwnGender  = ProfGender();
 		g_iOwnCostume = ProfCostume();
+		PreloadOtherGender( a_pProperty );
 		LoadWanted();
 	}
 	return bRes;
@@ -143,7 +152,7 @@ HOOK( 0x00424a20, AAssetLoader_LoadPlayerCharacter, TBOOL, const void* a_pProper
 HOOK( 0x004248a0, AAssetLoader_UnloadPlayerCharacter, TBOOL, const void* a_pProperty )
 {
 	g_pfnUnload = (t_PlayerChar)AAssetLoader_UnloadPlayerCharacter::_orig_func_ptr;
-	if ( a_pProperty && a_pProperty == g_pProp ) UnloadExtras();
+	if ( a_pProperty && g_iDepth > 0 && --g_iDepth == 0 && g_pProp ) UnloadExtras( a_pProperty );
 	return CallOriginal( a_pProperty );
 }
 

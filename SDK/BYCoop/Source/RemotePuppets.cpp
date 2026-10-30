@@ -188,6 +188,21 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 	char* pProfiles  = *(char**)0x007b493c;
 	const int iOwnG  = pProfiles ? *(TINT*)( pProfiles + 0x10 ) : -1;
 
+	// diagnostics every 5 s: why a remote cow is (not) there
+	static double s_fNextDiag = 0;
+	if ( a_fNow >= s_fNextDiag )
+	{
+		s_fNextDiag = a_fNow + 5.0;
+		for ( auto& [ slot, rp ] : a_rRemotes )
+		{
+			coop::Pose p = rp.hasPose ? rp.Sample( a_fNow, a_fDelay ) : coop::Pose{};
+			char       sz[ 200 ];
+			snprintf( sz, sizeof( sz ), "diag: P%d %s pose=%d map %u/%u look g%d h%d loaded=%d own g%d puppet=%d", slot + 1, rp.look.name, rp.hasPose, p.levelHash, a_uiLocalLevel,
+			          rp.look.gender, rp.look.hide, PlayerAssets::IsLoaded( rp.look.gender, rp.look.hide ), iOwnG, (int)g_oPuppets.count( slot ) );
+			a_fnLog( sz );
+		}
+	}
+
 	for ( auto& [ slot, rp ] : a_rRemotes )
 	{
 		if ( !rp.hasPose ) continue;
