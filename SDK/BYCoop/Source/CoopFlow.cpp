@@ -511,6 +511,12 @@ void CoopFlow::Update( bool a_bInLevel, const float* a_pPos )
 			coop::WorldData w;
 			if ( !bHostInWorld || !BuildWorld( w, a_pPos ) )
 			{
+				static double s_fLastWhy = 0;
+				if ( Now() - s_fLastWhy > 5.0 )
+				{
+					s_fLastWhy = Now();
+					Log( std::string( "world not ready: top=" ) + TopStateName() + " inLevel=" + std::to_string( a_bInLevel ) + " mainGame=" + std::to_string( *pMainGameLoaded ) );
+				}
 				w       = coop::WorldData{};
 				w.ready = false;
 			}
@@ -578,16 +584,7 @@ void CoopFlow::Update( bool a_bInLevel, const float* a_pPos )
 						SetPhase( PH_START_LOAD );
 				}
 			}
-			if ( s->PopWorldReady() && g_ePhase == PH_WAIT_HOST )
-			{
-				s->RequestWorld();
-				SetPhase( PH_REQUEST );
-			}
-			if ( g_ePhase == PH_REQUEST && Now() - g_fPhaseTime > 10.0 ) // lost? ask again
-			{
-				s->RequestWorld();
-				g_fPhaseTime = Now();
-			}
+			s->PopWorldReady(); // (the session keeps asking by itself)
 			break;
 		}
 		case PH_TO_FRONTEND:

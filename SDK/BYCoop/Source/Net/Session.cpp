@@ -1,6 +1,7 @@
 #include "Session.h"
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 
 namespace coop
 {
@@ -90,16 +91,17 @@ void Session::Leave()
 	m_worldRequests.clear();
 	m_worlds.clear();
 	m_worldReady = false;
+	m_wantWorld  = false;
 }
 
 void Session::RequestWorld()
 {
 	if ( !m_t->IsInSession() || m_t->IsHost() ) return;
-	uint8_t b = MSG_WORLD_REQ;
-	m_t->Send( m_t->HostId(), &b, 1, true );
+	m_wantWorld    = true;
+	m_lastWorldReq = -100;
 }
 
-bool Session::PopWorldRequest( PeerId& a_rFrom )
+bool Session::PopWorldRequest( PeerId& a_rFrom ) // (one entry per joiner)
 {
 	if ( m_worldRequests.empty() ) return false;
 	a_rFrom = m_worldRequests.front();
@@ -114,7 +116,7 @@ void Session::SendWorld( PeerId a_to, const WorldData& a_rData )
 	  << (uint32_t)a_rData.slot.size();
 	w.b.insert( w.b.end(), a_rData.slot.begin(), a_rData.slot.end() );
 	m_t->Send( a_to, w.b.data(), w.b.size(), true );
-	Log( "world sent (" + std::to_string( a_rData.slot.size() ) + " bytes, ready " + std::to_string( a_rData.ready ) + ")" );
+	if ( a_rData.ready ) Log( "world sent (" + std::to_string( a_rData.slot.size() ) + " bytes)" );
 }
 
 void Session::BroadcastWorldReady()
@@ -188,6 +190,14 @@ void Session::Update( double now )
 			m_sentJoin = m_t->Send( m_t->HostId(), w.b.data(), w.b.size(), true );
 		}
 		m_status = m_localSlot < 0 ? "joining..." : "joined as player " + std::to_string( m_localSlot + 1 );
+	}
+
+	// joiner: keep asking for the host's world (the game thread may be paused in an inactive window)
+	if ( m_wantWorld && m_localSlot >= 0 && !m_t->IsHost() && now - m_lastWorldReq >= 2.0 )
+	{
+		m_lastWorldReq = now;
+		uint8_t b      = MSG_WORLD_REQ;
+		m_t->Send( m_t->HostId(), &b, 1, true );
 	}
 
 	std::vector<Packet> in;
@@ -294,7 +304,8 @@ void Session::OnPacket( const Packet& p, double now )
 			return;
 		}
 		case MSG_WORLD_REQ:
-			if ( host && m_slotOf.count( p.from ) && m_worldRequests.size() < 16 ) m_worldRequests.push_back( p.from );
+			if ( host && m_slotOf.count( p.from ) && std::find( m_worldRequests.begin(), m_worldRequests.end(), p.from ) == m_worldRequests.end() )
+				m_worldRequests.push_back( p.from );
 			return;
 		case MSG_WORLD_DATA:
 		{
@@ -305,8 +316,11 @@ void Session::OnPacket( const Packet& p, double now )
 			r >> ready >> d.level >> d.pos[ 0 ] >> d.pos[ 1 ] >> d.pos[ 2 ] >> n;
 			if ( !r.ok || n > r.n - r.i ) return;
 			d.ready = ready != 0;
+			if ( !d.ready ) return; // the host isn't in its world yet: keep asking
 			d.slot.assign( r.p + r.i, r.p + r.i + n );
-			if ( m_worlds.size() < 4 ) m_worlds.push_back( std::move( d ) );
+			m_wantWorld = false;
+			m_worlds.clear();
+			m_worlds.push_back( std::move( d ) );
 			Log( "world received (" + std::to_string( n ) + " bytes)" );
 			return;
 		}

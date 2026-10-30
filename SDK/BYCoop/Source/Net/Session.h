@@ -82,7 +82,7 @@ public:
 	void Leave();
 
 	// World transfer. Host: PopWorldRequest/SendWorld/BroadcastWorldReady from the game thread.
-	// Joiner: RequestWorld, then PopWorld once it arrives (also re-request on WorldReady).
+	// Joiner: RequestWorld (repeated by the network thread until the host's world is ready), then PopWorld.
 	void RequestWorld();
 	bool PopWorldRequest( PeerId& a_rFrom );
 	void SendWorld( PeerId a_to, const WorldData& a_rData );
@@ -121,6 +121,8 @@ private:
 	std::vector<PeerId>         m_worldRequests;           // host
 	std::vector<WorldData>      m_worlds;                  // joiner
 	bool                        m_worldReady = false;      // joiner: host announced its world
+	bool                        m_wantWorld  = false;      // joiner: ask the host every 2 s until it sends a ready world
+	double                      m_lastWorldReq = -100;
 };
 
 } // namespace coop

@@ -60,6 +60,12 @@ int main() {
   WorldData got;
   bool okw = s[1]->PopWorld(got);
   CHECK(okw && got.ready && got.level == 7 && got.pos[1] == 2.5f && got.slot == wd.slot, "joiner receives the whole world blob");
+  // host not in its world yet: the joiner keeps asking until a ready world arrives
+  s[2]->RequestWorld();
+  int asked = 0; WorldData notReady;
+  for (int k = 0; k < 3; ++k) { Run({s[0], s[2]}, 2.1); while (s[0]->PopWorldRequest(req)) { asked++; s[0]->SendWorld(req, notReady); } }
+  WorldData none;
+  CHECK(asked >= 2 && !s[2]->PopWorld(none), "joiner re-asks while the host is not ready");
   s[0]->BroadcastWorldReady();
   Run({s[0], s[1], s[2], s[3]}, 0.3);
   CHECK(s[2]->PopWorldReady() && !s[2]->PopWorldReady(), "world-ready broadcast reaches joiners once");
