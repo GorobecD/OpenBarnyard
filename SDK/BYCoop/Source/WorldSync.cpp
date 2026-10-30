@@ -82,7 +82,7 @@ struct Writer
 	}
 	Writer& Str( const char* s )
 	{
-		uint8_t n = (uint8_t)min( strlen( s ), (size_t)255 );
+		size_t l = strlen( s ); uint8_t n = (uint8_t)( l > 255 ? 255 : l );
 		*this << n;
 		b.insert( b.end(), s, s + n );
 		return *this;
@@ -207,7 +207,7 @@ template <class F> void ForEachRegrowth( F&& fn )
 	void* rg = *ppRegrowth;
 	void* ty = *ppRegrowTypes;
 	if ( !rg || !ty ) return;
-	const TINT n = min( At<TINT>( ty, 8 ), 61 );
+	const TINT n = At<TINT>( ty, 8 ) < 61 ? At<TINT>( ty, 8 ) : 61;
 	for ( TINT t = 0; t < n; t++ )
 		for ( int l = 0; l < 2; l++ )
 		{
