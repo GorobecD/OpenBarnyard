@@ -6,6 +6,7 @@
 #include "RemotePuppets.h"
 #include <BYardSDK/SDKHooks.h>
 #include <BYardSDK/APlayerManager.h>
+#include <Toshi/TClass.h>
 #include <HookHelpers.h>
 #include <Math/TVector4.h>
 #include <windows.h>
@@ -73,6 +74,7 @@ enum EvType : uint8_t
 	EV_INV,       // host -> all: inventory and money
 	EV_PICK,      // a unit placed in the world (note, recipe...) was picked up
 	EV_DROPPOS,   // where a shared drop is while it flies / rolls
+	EV_NPC,       // host -> all: where the animals / characters are
 };
 
 struct Writer
@@ -532,6 +534,302 @@ void ApplyDropPos( Reader& r )
 	( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, TVector4( x, y, z, 1.0f ) ); // ASteer::SetPosition
 }
 
+
+// ================================================================ NPCs (host-driven)
+// The host's animals and characters are the real ones. A joiner keeps its own units that match the
+// host's (same type, close by), turns their AI off and moves them to the host's positions; host units
+// it doesn't have are spawned, its own extra ones are hidden.
+struct NpcTarget
+{
+	void*    pUnit = nullptr;
+	TVector4 vPos, vDir;
+	TFLOAT   fSpeed = 0;
+	double   fSeen  = 0;
+	bool     bHasPos = false;
+};
+std::map<uint32_t, NpcTarget>* g_pNpcs     = nullptr; // host unit id -> our unit
+std::map<void*, uint32_t>*     g_pNpcUnits = nullptr; // our unit -> host unit id
+std::map<void*, bool>*         g_pNpcHidden = nullptr; // our extra units we hid
+uint32_t                       g_uiNpcLevel = 0;
+double                         g_fNpcLevelAt = 0;
+
+bool IsCharacter( void* a_pUnit )
+{
+	typedef Toshi::TClass*( __thiscall * t_GetClass )( void* );
+	Toshi::TClass* pClass = ( *(t_GetClass**)a_pUnit )[ 0 ]( a_pUnit );
+	return pClass && pClass->IsA( (Toshi::TClass*)0x0077e6f8 ); // ACharacterUnit
+}
+
+bool IsSyncedNpc( void* a_pUnit, void* a_pLocalPlayer )
+{
+	const TUINT uiFlags = At<TUINT>( a_pUnit, 0x14 );
+	if ( a_pUnit == a_pLocalPlayer || ( uiFlags & 0x21 ) ) return false; // dying / not in queries (held in an inventory)
+	if ( RemotePuppets::IsPuppet( a_pUnit ) || g_pUnitNets->count( a_pUnit ) ) return false;
+	if ( !At<void*>( a_pUnit, 0x1c ) ) return false; // no steer
+	return IsCharacter( a_pUnit );
+}
+
+template <class F> void ForEachUnit( F&& fn )
+{
+	if ( !*ppUnitMgr ) return;
+	char* pRoot = (char*)*ppUnitMgr + 0x38;
+	char* pEnd  = pRoot - 4;
+	int   guard = 0;
+	for ( char* pUnit = *(char**)( pRoot + 4 ); pUnit && pUnit != pEnd && guard < 4000; pUnit = *(char**)( pUnit + 8 ), guard++ ) fn( (void*)pUnit );
+}
+
+void* LocalPlayerUnit()
+{
+	APlayerManager* pm = APlayerManager::GetSingleton();
+	return pm ? (void*)pm->GetPlayer( 0 ) : nullptr;
+}
+
+TFLOAT MeasuredSpeed( void* a_pSteer )
+{
+	typedef TFLOAT( __thiscall * t_GetF )( void* );
+	return ( *(t_GetF*)( *(char**)a_pSteer + 0xd4 ) )( a_pSteer );
+}
+
+struct NpcSent
+{
+	TFLOAT x, y, z, fSpeed;
+	double fAt;
+};
+std::map<void*, NpcSent>* g_pNpcSent = nullptr; // host: what the joiners last got for each unit
+
+struct NpcOut
+{
+	TINT        iId;
+	TFLOAT      x, y, z, dx, dz, fSpeed;
+	const char* szType;
+};
+
+// host: the units that moved (or weren't sent for a second)
+bool SafeCollectNpcs( std::vector<NpcOut>& a_rOut )
+{
+	__try
+	{
+		void*        pPlayer = LocalPlayerUnit();
+		const double now     = Now();
+		ForEachUnit( [ & ]( void* u ) {
+			if ( !IsSyncedNpc( u, pPlayer ) ) return;
+			void*           pSteer = At<void*>( u, 0x1c );
+			const TVector4* p      = UnitPosition( u );
+			if ( !p ) return;
+			typedef const TVector4*( __thiscall * t_GetV )( void* );
+			const TVector4* d      = ( *(t_GetV*)( *(char**)pSteer + 0xb8 ) )( pSteer );
+			const TFLOAT    fSpeed = MeasuredSpeed( pSteer );
+			NpcSent&        last   = ( *g_pNpcSent )[ u ];
+			const TFLOAT    mx = p->x - last.x, my = p->y - last.y, mz = p->z - last.z;
+			const bool      bMoved = mx * mx + my * my + mz * mz > 0.0004f || fabsf( fSpeed - last.fSpeed ) > 0.05f;
+			if ( !bMoved && now - last.fAt < 1.0 ) return;
+			last = { p->x, p->y, p->z, fSpeed, now };
+			a_rOut.push_back( { At<TINT>( u, 0x24 ), p->x, p->y, p->z, d ? d->x : 0.0f, d ? d->z : 1.0f, fSpeed, UnitTypeName( u ) } );
+		} );
+		return true;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
+void SendNpcs()
+{
+	static double s_fNext = 0;
+	if ( g_iPlayers < 2 || Now() < s_fNext ) return;
+	s_fNext = Now() + 1.0 / 20.0;
+	std::vector<NpcOut> out;
+	if ( !SafeCollectNpcs( out ) )
+	{
+		g_pNpcSent->clear();
+		return;
+	}
+	for ( size_t i = 0; i < out.size(); i += 40 ) // ~1.5 KB per packet
+	{
+		Writer         w;
+		const uint16_t n = (uint16_t)( out.size() - i < 40 ? out.size() - i : 40 );
+		w << (uint8_t)EV_NPC << Level() << n;
+		for ( size_t j = i; j < i + n; j++ )
+		{
+			const NpcOut& o = out[ j ];
+			w << o.iId << o.x << o.y << o.z << o.dx << o.dz << o.fSpeed;
+			w.Str( o.szType ? o.szType : "" );
+		}
+		Send( w, false );
+	}
+	if ( g_pNpcSent->size() > 2000 ) g_pNpcSent->clear();
+}
+
+void SetUnitVisible( void* a_pUnit, bool a_bVisible )
+{
+	__try
+	{
+		CALL_THIS( 0x00415ac0, void*, void, a_pUnit, TBOOL, a_bVisible ? TTRUE : TFALSE ); // AAnimatedUnit::SetVisible
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+
+void TakeOverNpc( void* a_pUnit )
+{
+	At<TUINT>( a_pUnit, 0x14 ) &= ~0x4u; // FLAGS_AI_ENABLED off: the host's AI drives it
+}
+
+void ApplyNpcs( Reader& r )
+{
+	uint32_t uiLevel;
+	uint16_t n = 0;
+	r >> uiLevel >> n;
+	if ( !r.ok || uiLevel != Level() ) return;
+	if ( uiLevel != g_uiNpcLevel ) // other map: the old pointers are gone
+	{
+		g_pNpcs->clear();
+		g_pNpcUnits->clear();
+		g_pNpcHidden->clear();
+		g_uiNpcLevel  = uiLevel;
+		g_fNpcLevelAt = Now();
+	}
+	// our candidates
+	std::map<void*, std::string> local;
+	void* pPlayer = LocalPlayerUnit();
+	ForEachUnit( [ & ]( void* u ) {
+		if ( IsSyncedNpc( u, pPlayer ) ) local[ u ] = UnitTypeName( u );
+	} );
+	// forget units that are gone
+	for ( auto it = g_pNpcs->begin(); it != g_pNpcs->end(); )
+		if ( !local.count( it->second.pUnit ) )
+		{
+			g_pNpcUnits->erase( it->second.pUnit );
+			it = g_pNpcs->erase( it );
+		}
+		else
+			++it;
+	const double now = Now();
+	for ( uint16_t i = 0; i < n && r.ok; i++ )
+	{
+		TINT   iId;
+		TFLOAT x, y, z, dx, dz, fSpeed;
+		r >> iId >> x >> y >> z >> dx >> dz >> fSpeed;
+		std::string strType = r.Str();
+		if ( !r.ok ) break;
+		NpcTarget& t = ( *g_pNpcs )[ (uint32_t)iId ];
+		if ( !t.pUnit )
+		{
+			// the closest unit of ours of that type, else a new one
+			void*  pBest = nullptr;
+			TFLOAT fBest = 25.0f * 25.0f;
+			for ( auto& [ u, type ] : local )
+			{
+				if ( type != strType || g_pNpcUnits->count( u ) ) continue;
+				const TVector4* p = UnitPosition( u );
+				if ( !p ) continue;
+				const TFLOAT d = ( p->x - x ) * ( p->x - x ) + ( p->z - z ) * ( p->z - z );
+				if ( d < fBest )
+				{
+					fBest = d;
+					pBest = u;
+				}
+			}
+			if ( !pBest )
+			{
+				g_bApplying = true;
+				pBest       = SafeSpawnByName( strType.c_str(), TVector4( x, y, z, 1.0f ) );
+				g_bApplying = false;
+				if ( pBest ) local[ pBest ] = strType;
+			}
+			if ( !pBest )
+			{
+				g_pNpcs->erase( (uint32_t)iId );
+				continue;
+			}
+			t.pUnit = pBest;
+			( *g_pNpcUnits )[ pBest ] = (uint32_t)iId;
+			if ( g_pNpcHidden->count( pBest ) )
+			{
+				SetUnitVisible( pBest, true );
+				g_pNpcHidden->erase( pBest );
+			}
+			TakeOverNpc( pBest );
+		}
+		t.vPos    = TVector4( x, y, z, 1.0f );
+		t.vDir    = TVector4( dx, 0.0f, dz, 0.0f );
+		t.fSpeed  = fSpeed;
+		t.fSeen   = now;
+		t.bHasPos = true;
+	}
+	// host units not heard of for 3 s are gone there: hide ours
+	for ( auto it = g_pNpcs->begin(); it != g_pNpcs->end(); )
+		if ( now - it->second.fSeen > 3.0 )
+		{
+			SetUnitVisible( it->second.pUnit, false );
+			( *g_pNpcHidden )[ it->second.pUnit ] = true;
+			g_pNpcUnits->erase( it->second.pUnit );
+			it = g_pNpcs->erase( it );
+		}
+		else
+			++it;
+	// ours that the host doesn't have (every host unit arrives within a second): hidden, AI off
+	if ( now - g_fNpcLevelAt < 2.0 ) return;
+	for ( auto& [ u, type ] : local )
+		if ( !g_pNpcUnits->count( u ) && !g_pNpcHidden->count( u ) )
+		{
+			TakeOverNpc( u );
+			SetUnitVisible( u, false );
+			( *g_pNpcHidden )[ u ] = true;
+		}
+}
+
+// every frame: glide our copies to the host's positions
+void MoveNpcs( TFLOAT a_fDelta )
+{
+	typedef void( __thiscall * t_SetV )( void*, const TVector4& );
+	const TFLOAT k = a_fDelta * 12.0f > 1.0f ? 1.0f : a_fDelta * 12.0f;
+	for ( auto& [ id, t ] : *g_pNpcs )
+	{
+		if ( !t.bHasPos || !t.pUnit ) continue;
+		void* pSteer = At<void*>( t.pUnit, 0x1c );
+		const TVector4* p = UnitPosition( t.pUnit );
+		if ( !pSteer || !p ) continue;
+		TVector4 v = *p;
+		const TFLOAT dx = t.vPos.x - v.x, dy = t.vPos.y - v.y, dz = t.vPos.z - v.z;
+		if ( dx * dx + dy * dy + dz * dz > 6.0f * 6.0f ) v = t.vPos; // too far: jump
+		else
+		{
+			v.x += dx * k;
+			v.y += dy * k;
+			v.z += dz * k;
+		}
+		v.w = 1.0f;
+		At<TUINT>( t.pUnit, 0x14 ) &= ~0x4u; // something may have turned the AI back on
+		( *(t_SetV*)( *(char**)pSteer + 0x84 ) )( pSteer, v );
+		if ( t.vDir.x != 0.0f || t.vDir.z != 0.0f ) ( *(t_SetV*)( *(char**)pSteer + 0x8c ) )( pSteer, t.vDir );
+		// walk / run animation from the measured speed (as the remote players' cows)
+		typedef void*( __thiscall * t_GetKin )( void* );
+		typedef void( __thiscall * t_SetF )( void*, TFLOAT );
+		void* pKin = ( *(t_GetKin*)( *(char**)pSteer + 0x114 ) )( pSteer );
+		if ( pKin )
+		{
+			( *(t_SetF*)( *(char**)pKin + 0x1c ) )( pKin, t.fSpeed );
+			( *(t_SetF*)( *(char**)pKin + 0x20 ) )( pKin, t.fSpeed );
+		}
+	}
+}
+
+bool SafeMoveNpcs( TFLOAT a_fDelta )
+{
+	__try
+	{
+		MoveNpcs( a_fDelta );
+		return true;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
 // a unit placed in the world was picked up here: remove the same one for the others
 void SendPick( void* a_pUnit )
 {
@@ -811,6 +1109,9 @@ void Handle( const coop::GameEvent& e )
 		case EV_DROP: ApplyDrop( r ); break;
 		case EV_PICK: ApplyPick( r ); break;
 		case EV_DROPPOS: ApplyDropPos( r ); break;
+		case EV_NPC:
+			if ( !g_bHost && e.slot == 0 ) ApplyNpcs( r );
+			break;
 		case EV_GONE: ApplyGone( r ); break;
 		case EV_INV_DELTA:
 			if ( g_bHost ) ApplyInventoryDelta( r );
@@ -1032,6 +1333,10 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	g_pUnitNets     = new std::map<void*, uint32_t>();
 	g_pBaseline     = new Counts();
 	g_pOwnDrops     = new std::map<uint32_t, double>();
+	g_pNpcs         = new std::map<uint32_t, NpcTarget>();
+	g_pNpcUnits     = new std::map<void*, uint32_t>();
+	g_pNpcHidden    = new std::map<void*, bool>();
+	g_pNpcSent      = new std::map<void*, NpcSent>();
 	InstallHook<ARegrowthManager_TakeObject>();
 	InstallHook<ARegrowthManager_TakeRandomObject>();
 	InstallHook<ARegrowthManager_GrowObjects>();
@@ -1072,6 +1377,11 @@ void WorldSync::Update( bool a_bInWorld )
 		g_bHaveBaseline = false;
 		g_pNetUnits->clear();
 		g_pUnitNets->clear();
+		g_pNpcs->clear();
+		g_pNpcUnits->clear();
+		g_pNpcHidden->clear();
+		g_pNpcSent->clear();
+		g_uiNpcLevel = 0;
 		Log( std::string( "world sync " ) + ( g_bActive ? "on" : "off" ) );
 	}
 	g_bHost = bHost;
@@ -1100,6 +1410,16 @@ void WorldSync::Update( bool a_bInWorld )
 	}
 	UpdateInventory();
 	SendDropPositions();
+	static double s_fLastFrame = Now();
+	const TFLOAT  fDelta       = (TFLOAT)( now - s_fLastFrame );
+	s_fLastFrame               = now;
+	if ( g_bHost ) SendNpcs();
+	else if ( g_bHostSameLevel && !SafeMoveNpcs( fDelta ) )
+	{
+		Log( "npc: move failed, resetting" );
+		g_pNpcs->clear();
+		g_pNpcUnits->clear();
+	}
 
 	for ( auto it = g_pRecentTakes->begin(); it != g_pRecentTakes->end(); )
 		if ( now - it->second > 10.0 ) it = g_pRecentTakes->erase( it );
