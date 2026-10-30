@@ -560,8 +560,13 @@ bool IsCharacter( void* a_pUnit )
 	return pClass && pClass->IsA( (Toshi::TClass*)0x0077e6f8 ); // ACharacterUnit
 }
 
+// every unit that was our player: on a bike the cow is kept aside (hidden at 0,0,0) while the
+// cow-on-a-bike unit is the player, and it must stay ours
+std::map<void*, bool>* g_pPlayerUnits = nullptr;
+
 bool IsSyncedNpc( void* a_pUnit, void* a_pLocalPlayer )
 {
+	if ( g_pPlayerUnits->count( a_pUnit ) ) return false;
 	const TUINT uiFlags = At<TUINT>( a_pUnit, 0x14 );
 	if ( a_pUnit == a_pLocalPlayer || ( uiFlags & 0x21 ) ) return false; // dying / not in queries (held in an inventory)
 	if ( RemotePuppets::IsPuppet( a_pUnit ) || g_pUnitNets->count( a_pUnit ) ) return false;
@@ -581,7 +586,9 @@ template <class F> void ForEachUnit( F&& fn )
 void* LocalPlayerUnit()
 {
 	APlayerManager* pm = APlayerManager::GetSingleton();
-	return pm ? (void*)pm->GetPlayer( 0 ) : nullptr;
+	void*           p  = pm ? (void*)pm->GetPlayer( 0 ) : nullptr;
+	if ( p && !RemotePuppets::IsPuppet( p ) ) ( *g_pPlayerUnits )[ p ] = true;
+	return p;
 }
 
 TFLOAT MeasuredSpeed( void* a_pSteer )
@@ -640,6 +647,13 @@ void SendNpcs()
 {
 	static double s_fNext = 0;
 	if ( g_iPlayers < 2 || Now() < s_fNext ) return;
+	static uint32_t s_uiLevel = 0;
+	if ( s_uiLevel != Level() )
+	{
+		s_uiLevel = Level();
+		g_pNpcSent->clear();
+		g_pPlayerUnits->clear();
+	}
 	s_fNext = Now() + 1.0 / 20.0;
 	std::vector<NpcOut> out;
 	if ( !SafeCollectNpcs( out ) )
@@ -690,6 +704,7 @@ void ApplyNpcs( Reader& r )
 		g_pNpcs->clear();
 		g_pNpcUnits->clear();
 		g_pNpcHidden->clear();
+		g_pPlayerUnits->clear();
 		g_uiNpcLevel  = uiLevel;
 		g_fNpcLevelAt = Now();
 	}
@@ -1339,6 +1354,7 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	g_pNpcUnits     = new std::map<void*, uint32_t>();
 	g_pNpcHidden    = new std::map<void*, bool>();
 	g_pNpcSent      = new std::map<void*, NpcSent>();
+	g_pPlayerUnits  = new std::map<void*, bool>();
 	InstallHook<ARegrowthManager_TakeObject>();
 	InstallHook<ARegrowthManager_TakeRandomObject>();
 	InstallHook<ARegrowthManager_GrowObjects>();
@@ -1383,6 +1399,7 @@ void WorldSync::Update( bool a_bInWorld )
 		g_pNpcUnits->clear();
 		g_pNpcHidden->clear();
 		g_pNpcSent->clear();
+		g_pPlayerUnits->clear();
 		g_uiNpcLevel = 0;
 		Log( std::string( "world sync " ) + ( g_bActive ? "on" : "off" ) );
 	}

@@ -13,6 +13,8 @@ void Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const std::map<int, co
              const std::function<void( const std::string& )>& a_fnLog );
 // True if a_pUnit is one of our puppets (so it is never mistaken for the local player)
 bool IsPuppet( void* a_pUnit );
+// True if a_pSteer is the steer of a remote player's cow on a bike (driven by the network)
+bool IsRideSteer( void* a_pSteer );
 // True if the cow of a_iSlot is in the world right now (name tags are drawn only for those)
 bool HasPuppet( int a_iSlot );
 // Current map id (terrain index + 1), sent in Pose::levelHash

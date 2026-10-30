@@ -89,6 +89,17 @@ bool ReadLocalPose( coop::Pose& out )
 	// direction getters read them without a check: use the velocity then.
 	typedef void*( __thiscall * t_GetKin )( void* );
 	void* pSteer = p->GetSteer();
+	out.flags = 0;
+	if ( *(void**)pSteer == (void*)0x007250c8 ) // ABikeSteer: on a bike
+	{
+		typedef TFLOAT( __thiscall * t_GetF )( void* );
+		typedef const TVector4*( __thiscall * t_GetDir )( void* );
+		out.flags = 1;
+		out.speed = ( *(t_GetF*)( *(char**)pSteer + 0xc4 ) )( pSteer ); // ABikeSteer::GetSpeed
+		const TVector4* pDir = ( *(t_GetDir*)( *(char**)pSteer + 0xb8 ) )( pSteer ); // ABikeSteer::GetDirection (own, no kinematics)
+		if ( pDir && ( pDir->x != 0.0f || pDir->z != 0.0f ) ) out.yaw = std::atan2( pDir->x, pDir->z );
+		return true;
+	}
 	if ( !( *(t_GetKin*)( *(char**)pSteer + 0x114 ) )( pSteer ) )
 	{
 		if ( out.speed > 0.05f ) out.yaw = std::atan2( vel.x, vel.z );

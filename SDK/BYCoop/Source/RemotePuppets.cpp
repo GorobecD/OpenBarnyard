@@ -32,6 +32,12 @@ struct Puppet
 	int   iGender = -1, iCostume = -1; // look the unit was created with
 	bool  bOwnModel = false;           // has its own copy of the model (can have another hide than ours)
 	bool  bVisible = true;
+	// riding a bike: the "american_?_bike" unit (the cow on the bike), shown instead of the cow
+	void*  pRide        = nullptr;
+	bool   bRideShown   = false;
+	double fRideFailed  = -100.0;
+	void*  pTakenBike   = nullptr; // our parked bike hidden while this player rides it
+	TVector4 vRidePos, vRideDir;
 };
 // by slot. Allocated on first use: a global std::map allocates in its constructor, which runs
 // before TMemory is initialised and made LoadLibrary fail (error 1114) once already.
@@ -41,7 +47,7 @@ std::map<int, Puppet>& Puppets()
 	return *s_p;
 }
 #define g_oPuppets Puppets()
-void*                 g_pLevelUnit = nullptr; // local unit the puppets were spawned next to
+uint32_t              g_uiPuppetLevel = 0; // level the puppets were spawned in (0: none)
 
 void* Steer( void* a_pUnit ) { return a_pUnit ? *(void**)( (char*)a_pUnit + OFF_UNIT_STEER ) : nullptr; }
 
@@ -139,6 +145,73 @@ void SafeSetVisible( void* a_pUnit, bool a_bVisible )
 	}
 }
 
+
+// ---------------------------------------------------------------- bikes
+// ABikeManager (singleton 0x00783c70): the player getting on a bike is replaced by a unit of the
+// cow riding it ("american_m_bike"/"american_f_bike") with an ABikeSteer (vtable 0x007250c8) whose
+// APhysicsBike is at +0xc4; the bike model ("bike1".."bike5", only m_iLoadedBikeType +0x608 is
+// loaded) is attached to its body_loc by ABikeHelpers::AttachBikeModel (stdcall 0x005262b0).
+constexpr TUINT VT_SETSPEED = 0x100;
+void** const    ppBikeManager = (void**)0x00783c70;
+
+int LoadedBikeType() { return *ppBikeManager ? *(TINT*)( (char*)*ppBikeManager + 0x608 ) : -1; }
+
+void FreezeRide( void* a_pSteer )
+{
+	void* pPhysics = *(void**)( (char*)a_pSteer + 0xc4 );
+	if ( pPhysics ) CALL_THIS( 0x0065f560, void*, void, pPhysics, TBOOL, TTRUE ); // APhysicsVehicle::SetFrozen
+}
+
+void* SafeSpawnRide( void* a_pMgr, const char* a_szType, UnitTransform* a_pTransform, int a_iBikeType )
+{
+	__try
+	{
+		void* pType = CALL_THIS( 0x0040fee0, void*, void*, a_pMgr, const char*, a_szType ); // FindUnit
+		if ( !pType ) return nullptr;
+		void* pUnit = CALL_THIS( 0x00411700, void*, void*, a_pMgr, void*, pType, UnitTransform*, a_pTransform ); // CreateUnitFromTemplate
+		if ( !pUnit ) pUnit = CALL_THIS( 0x00410d70, void*, void*, a_pMgr, void*, pType, UnitTransform*, a_pTransform );
+		if ( !pUnit ) return nullptr;
+		if ( !*(void**)( (char*)pUnit + OFF_UNIT_ANIMOBJ ) || !Steer( pUnit ) || **(void***)( (char*)pUnit + OFF_UNIT_STEER ) != (void*)0x007250c8 )
+		{
+			CALL_THIS( 0x00410fe0, void*, void, a_pMgr, void*, pUnit ); // same frame, nothing refers to it yet
+			return nullptr;
+		}
+		CALL_THIS( 0x00413ba0, void*, void, pUnit, TBOOL, TFALSE ); // AUnit::SetAIEnabled: no input, no AI
+		CALL( 0x005262b0, void, void*, pUnit, TINT, a_iBikeType );  // ABikeHelpers::AttachBikeModel
+		FreezeRide( Steer( pUnit ) );
+		return pUnit;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return nullptr;
+	}
+}
+
+bool SafeMoveRide( void* a_pUnit, const TVector4& a_rPos, const TVector4& a_rDir, TFLOAT a_fSpeed )
+{
+	__try
+	{
+		void* pSteer = Steer( a_pUnit );
+		if ( !pSteer ) return false;
+		FreezeRide( pSteer ); // our positions drive it, not its physics
+		( *(t_SetVec*)( *(char**)pSteer + VT_SETPOSITION ) )( pSteer, a_rPos );
+		typedef void( __thiscall * t_SetDir )( void*, const TVector4& );
+		( *(t_SetDir*)( *(char**)pSteer + VT_SETDIRECTION ) )( pSteer, a_rDir );
+		typedef void( __thiscall * t_SetF )( void*, TFLOAT );
+		( *(t_SetF*)( *(char**)pSteer + VT_SETSPEED ) )( pSteer, a_fSpeed ); // ABikeSteer::m_fSpeed: pedalling animation
+		return true;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
+// our bikes: { type, rack, unit, parked } at +0x20, count +0x544
+void* Bike( int i ) { return *(void**)( (char*)*ppBikeManager + 0x20 + i * 0x10 + 8 ); }
+bool  BikeParked( int i ) { return *(TBOOL*)( (char*)*ppBikeManager + 0x20 + i * 0x10 + 0x0c ) != 0; }
+int   NumBikes() { return *ppBikeManager ? *(TINT*)( (char*)*ppBikeManager + 0x544 ) : 0; }
+
 // The "player" unit type lists 4 models: male, female, and the barn's male, female
 // (AGameLoader: the barn explore minigame spawns the player with 2/3)
 int ModelIndex( int a_iGender ) { return ( *(TBOOL*)0x007810e6 ? 2 : 0 ) + ( a_iGender == 1 ? 1 : 0 ); }
@@ -152,13 +225,113 @@ void ApplyHide( void* a_pUnit, int a_iGender, int a_iCostume, int a_iOwnGender, 
 	if ( !SafeApplyMaterial( a_pUnit, a_iCostume ) ) a_fnLog( "puppet hide not applied" );
 }
 
+
+// our parked bike next to where the remote player got on: it is the one they took
+void TakeBike( Puppet& a_rPP, const TVector4& a_rPos )
+{
+	if ( a_rPP.pTakenBike || !*ppBikeManager ) return;
+	void*  pBest = nullptr;
+	TFLOAT fBest = 8.0f * 8.0f;
+	for ( int i = 0; i < NumBikes() && i < 56; i++ )
+	{
+		void* pBike = Bike( i );
+		if ( !pBike || !BikeParked( i ) || !Steer( pBike ) ) continue;
+		bool bTaken = false;
+		for ( auto& kv : g_oPuppets ) bTaken |= kv.second.pTakenBike == pBike;
+		if ( bTaken ) continue;
+		typedef const TVector4*( __thiscall * t_GetPos )( void* );
+		const TVector4* p = ( *(t_GetPos*)( *(char**)Steer( pBike ) + 0xac ) )( Steer( pBike ) );
+		if ( !p ) continue;
+		const TFLOAT d = ( p->x - a_rPos.x ) * ( p->x - a_rPos.x ) + ( p->z - a_rPos.z ) * ( p->z - a_rPos.z );
+		if ( d < fBest )
+		{
+			fBest = d;
+			pBest = pBike;
+		}
+	}
+	if ( !pBest ) return;
+	SafeSetVisible( pBest, false );
+	a_rPP.pTakenBike = pBest;
+}
+
+bool SafePlaceBike( void* a_pBike, const TVector4& a_rPos, const TVector4& a_rDir )
+{
+	__try
+	{
+		SteerCall( Steer( a_pBike ), VT_SETPOSITION, a_rPos );
+		SteerCall( Steer( a_pBike ), VT_SETDIRECTION, a_rDir );
+		return true;
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+}
+
+// got off: the cow comes back, the bike stays where the ride ended
+void HideRide( Puppet& a_rPP, const std::function<void( const std::string& )>& a_fnLog )
+{
+	if ( !a_rPP.bRideShown ) return;
+	a_rPP.bRideShown = false;
+	SafeSetVisible( a_rPP.pRide, false );
+	SafeMoveRide( a_rPP.pRide, TVector4( 0.0f, 0.0f, 0.0f, 1.0f ), TVector4( 0.0f, 0.0f, 1.0f, 0.0f ), 0.0f );
+	if ( a_rPP.pTakenBike )
+	{
+		SafePlaceBike( a_rPP.pTakenBike, a_rPP.vRidePos, a_rPP.vRideDir );
+		SafeSetVisible( a_rPP.pTakenBike, true );
+		a_rPP.pTakenBike = nullptr;
+	}
+	a_fnLog( std::string( "puppet off the bike: " ) + a_rPP.szName );
+}
+
+void SpawnRide( int a_iSlot, Puppet& a_rPP, const coop::RemotePlayer& a_rRP, const TVector4& a_rPos, const TVector4& a_rDir, int a_iOwnGender, double a_fNow,
+                const std::function<void( const std::string& )>& a_fnLog )
+{
+	const int iBikeType = LoadedBikeType();
+	if ( iBikeType < 0 || !*ppUnitManager )
+	{
+		a_rPP.fRideFailed = a_fNow;
+		return;
+	}
+	UnitTransform oT;
+	oT.vPos = a_rPos;
+	oT.vDir = a_rDir;
+	char*      pProfiles     = *(char**)0x007b493c;
+	const bool bWantOwnModel = a_rRP.look.gender == a_iOwnGender && a_rRP.look.hide != ( pProfiles ? *(TINT*)( pProfiles + 0x48 ) : -1 );
+	g_iFallbackModel  = 0;
+	g_iAltModelSlot   = bWantOwnModel ? a_iSlot : 0;
+	g_bAltModelUsed   = false;
+	g_bSpawningPuppet = true;
+	void* pUnit = SafeSpawnRide( *ppUnitManager, a_rRP.look.gender == 1 ? "american_f_bike" : "american_m_bike", &oT, iBikeType );
+	g_bSpawningPuppet = false;
+	g_iAltModelSlot   = 0;
+	if ( !pUnit )
+	{
+		a_rPP.fRideFailed = a_fNow;
+		a_fnLog( std::string( "ride puppet spawn failed: " ) + a_rPP.szName );
+		return;
+	}
+	ApplyHide( pUnit, a_rRP.look.gender, a_rRP.look.hide, a_iOwnGender, a_fnLog, g_bAltModelUsed );
+	SafeSetVisible( pUnit, false );
+	a_rPP.pRide      = pUnit;
+	a_rPP.bRideShown = false;
+	a_fnLog( std::string( "ride puppet spawned: " ) + a_rPP.szName + " bike" + std::to_string( iBikeType + 1 ) );
+}
+
 TVector4 PoseDir( const coop::Pose& p ) { return TVector4( std::sin( p.yaw ), 0.0f, std::cos( p.yaw ), 0.0f ); }
 } // namespace
 
 bool RemotePuppets::IsPuppet( void* a_pUnit )
 {
 	for ( auto& kv : g_oPuppets )
-		if ( kv.second.pUnit == a_pUnit ) return true;
+		if ( kv.second.pUnit == a_pUnit || kv.second.pRide == a_pUnit ) return true;
+	return false;
+}
+
+bool RemotePuppets::IsRideSteer( void* a_pSteer )
+{
+	for ( auto& kv : g_oPuppets )
+		if ( kv.second.pRide && Steer( kv.second.pRide ) == a_pSteer ) return true;
 	return false;
 }
 
@@ -175,24 +348,30 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 {
 	void* pMgr = *ppUnitManager;
 
-	// Level changed or left: the game destroyed every unit, forget the stale pointers
-	if ( a_pLocalUnit != g_pLevelUnit )
+	// Level changed or left: the game destroyed every unit, forget the stale pointers. (Not on a change
+	// of our own unit: getting on a bike replaces it.)
+	const uint32_t uiLevel = a_pLocalUnit ? a_uiLocalLevel : 0;
+	if ( uiLevel != g_uiPuppetLevel )
 	{
 		if ( !g_oPuppets.empty() ) a_fnLog( "puppets: level changed, dropping " + std::to_string( g_oPuppets.size() ) );
 		g_oPuppets.clear();
 		Failed().clear();
-		g_pLevelUnit  = a_pLocalUnit;
-		g_fLevelSince = a_fNow;
+		g_uiPuppetLevel = uiLevel;
+		g_fLevelSince   = a_fNow;
 	}
 	if ( !a_pLocalUnit || !pMgr ) return;
 
 	// Players who left: hide their cows (see SafeSetVisible)
 	for ( auto& [ slot, pp ] : g_oPuppets )
-		if ( !a_rRemotes.count( slot ) && pp.bVisible )
+		if ( !a_rRemotes.count( slot ) )
 		{
-			SafeSetVisible( pp.pUnit, false );
-			pp.bVisible = false;
-			a_fnLog( std::string( "puppet hidden (left): " ) + pp.szName );
+			HideRide( pp, a_fnLog );
+			if ( pp.bVisible )
+			{
+				SafeSetVisible( pp.pUnit, false );
+				pp.bVisible = false;
+				a_fnLog( std::string( "puppet hidden (left): " ) + pp.szName );
+			}
 		}
 
 	char* pProfiles  = *(char**)0x007b493c;
@@ -224,6 +403,7 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 		// remote went to another map (or we did): its cow must not stand in ours
 		if ( p.levelHash != a_uiLocalLevel )
 		{
+			if ( it != g_oPuppets.end() ) HideRide( it->second, a_fnLog );
 			if ( it != g_oPuppets.end() && it->second.bVisible )
 			{
 				SafeSetVisible( it->second.pUnit, false );
@@ -274,6 +454,42 @@ void RemotePuppets::Update( void* a_pLocalUnit, uint32_t a_uiLocalLevel, const s
 			continue;
 		}
 		Puppet& pp = it->second;
+		// on a bike: the cow-on-a-bike unit instead of the cow
+		if ( p.flags & 1 )
+		{
+			if ( !pp.pRide && a_fNow - pp.fRideFailed > 10.0 ) SpawnRide( slot, pp, rp, vPos, vDir, iOwnG, a_fNow, a_fnLog );
+			if ( pp.pRide )
+			{
+				if ( !pp.bRideShown )
+				{
+					SafeSetVisible( pp.pRide, true );
+					pp.bRideShown = true;
+					TakeBike( pp, vPos );
+					a_fnLog( std::string( "puppet on a bike: " ) + pp.szName );
+				}
+				if ( pp.bVisible )
+				{
+					SafeSetVisible( pp.pUnit, false );
+					pp.bVisible = false;
+				}
+				pp.vRidePos = vPos;
+				pp.vRideDir = vDir;
+				if ( !SafeMoveRide( pp.pRide, vPos, vDir, p.speed ) )
+				{
+					a_fnLog( "ride puppet: move failed" );
+					pp.pRide       = nullptr; // leave it, don't touch it again
+					pp.bRideShown  = false;
+					pp.fRideFailed = a_fNow;
+				}
+				// the hidden cow follows (name tag, interactions)
+				void* pSteer = Steer( pp.pUnit );
+				SteerCall( pSteer, VT_SETPOSITION, vPos );
+				continue;
+			}
+		}
+		else
+			HideRide( pp, a_fnLog );
+
 		if ( !pp.bVisible )
 		{
 			SafeSetVisible( pp.pUnit, true );
@@ -344,8 +560,18 @@ MEMBER_HOOK( 0x006127f0, AModelReposStub, AModelRepos_InstantiateModel, void*, v
 	return CallOriginal( a_pModel );
 }
 
+// ABikeSteer::Update: a ride puppet only goes where the network says (no physics, input, sounds)
+struct ABikeSteerStub
+{};
+MEMBER_HOOK( 0x0055c630, ABikeSteerStub, ABikeSteer_Update, TBOOL, TFLOAT a_fDeltaTime )
+{
+	if ( RemotePuppets::IsRideSteer( this ) ) return TTRUE;
+	return CallOriginal( a_fDeltaTime );
+}
+
 void RemotePuppets::Install()
 {
+	InstallHook<ABikeSteer_Update>();
 	InstallHook<AAnimatedUnit_CreateAnimatableObject>();
 	InstallHook<AModelRepos_InstantiateModel>();
 }
