@@ -90,7 +90,7 @@ std::string IniPath()
 	strcpy( strrchr( sz, '\\' ) + 1, "bycoop.ini" );
 	return sz;
 }
-bool HasCow() { return GetPrivateProfileIntA( "cow", "gender", -1, IniPath().c_str() ) >= 0; }
+bool HasCow() { return (int)GetPrivateProfileIntA( "cow", "gender", -1, IniPath().c_str() ) >= 0; } // (UINT: the -1 default needs the cast)
 int  CowGender() { return std::clamp( (int)GetPrivateProfileIntA( "cow", "gender", 0, IniPath().c_str() ), 0, 1 ); }
 int  CowHide() { return std::clamp( (int)GetPrivateProfileIntA( "cow", "hide", 0, IniPath().c_str() ), 0, NUM_HIDES - 1 ); }
 void SaveCow( int a_iGender, int a_iHide )
