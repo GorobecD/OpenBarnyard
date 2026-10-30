@@ -367,6 +367,9 @@ std::map<void*, uint32_t>* g_pUnitNets = nullptr;
 uint32_t g_uiNextNetId = 1;
 bool     g_bShakeSpawn = false;
 int      g_iPlayers    = 1; // players in the session (bikes)
+int      g_iInSpawnCoin = 0;      // inside ACoinSpawner::SpawnCoin (coins spin, bounce and fade: spawn the same way)
+bool     g_bCapture    = false;   // catch the next spawned unit (remote coin)
+void*    g_pCaptured   = nullptr;
 double   g_fDropUntil  = 0; // units spawned until then came out of something we broke/shook (shared)
 std::map<uint32_t, double>* g_pOwnDrops = nullptr; // our drops -> spawn time (their position is streamed)
 
@@ -415,6 +418,17 @@ void SafeDestroyUnit( void* a_pUnit )
 	}
 }
 
+void SafeSpawnCoin( void** a_ppType, const TVector4& a_rPos )
+{
+	__try
+	{
+		CALL( 0x0066ef10, void, void**, a_ppType, const TVector4&, a_rPos );
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+	}
+}
+
 void ApplyDrop( Reader& r )
 {
 	uint32_t uiId, uiLevel;
@@ -422,9 +436,25 @@ void ApplyDrop( Reader& r )
 	r >> uiId >> uiLevel >> x >> y >> z;
 	std::string strType = r.Str();
 	if ( !r.ok || uiLevel != Level() || strType.empty() || g_pNetUnits->count( uiId ) ) return;
-	g_bApplying  = true;
-	void* pUnit  = SafeSpawnByName( strType.c_str(), TVector4( x, y, z, 1.0f ) );
-	g_bApplying  = false;
+	uint8_t uiKind = 0;
+	Reader  rk     = r;
+	rk >> uiKind;
+	g_bApplying = true;
+	void* pUnit = nullptr;
+	if ( rk.ok && uiKind == 1 )
+	{
+		// ACoinSpawner::SpawnCoin( type, pos ) (__stdcall): spins, bounces, fades out like the original
+		PStr     type( strType.c_str() );
+		TVector4 vPos( x, y, z, 1.0f );
+		g_bCapture  = true;
+		g_pCaptured = nullptr;
+		SafeSpawnCoin( &type.p, vPos );
+		g_bCapture = false;
+		pUnit      = g_pCaptured;
+	}
+	else
+		pUnit = SafeSpawnByName( strType.c_str(), TVector4( x, y, z, 1.0f ) );
+	g_bApplying = false;
 	if ( pUnit ) Track( uiId, pUnit );
 }
 
@@ -453,6 +483,7 @@ void OnSpawned( void* a_pUnit, const TVector4& a_rPos )
 	Writer w;
 	w << (uint8_t)EV_DROP << uiId << Level() << a_rPos.x << a_rPos.y << a_rPos.z;
 	w.Str( UnitTypeName( a_pUnit ) );
+	w << (uint8_t)( g_iInSpawnCoin > 0 ? 1 : 0 );
 	Send( w, true );
 }
 
@@ -843,6 +874,7 @@ struct UnitMgrStub
 MEMBER_HOOK( 0x00411a70, UnitMgrStub, AUnitManager_SpawnUnitType, void*, void* a_pType, const TVector4& a_rPos, const TVector4& a_rDir )
 {
 	void* pUnit = CallOriginal( a_pType, a_rPos, a_rDir );
+	if ( g_bCapture && !g_pCaptured ) g_pCaptured = pUnit;
 	OnSpawned( pUnit, a_rPos );
 	return pUnit;
 }
@@ -937,6 +969,14 @@ MEMBER_HOOK( 0x006247d0, InventoryStub, AInventoryComponent_AddUnit, TBOOL, void
 	return CallOriginal( a_pUnit, a_iCount, a_strInventory );
 }
 
+// ACoinSpawner::SpawnCoin (static, __stdcall): coins out of a crate
+HOOK( 0x0066ef10, ACoinSpawner_SpawnCoin, void, void* a_pType, const TVector4& a_rPos )
+{
+	g_iInSpawnCoin++;
+	CallOriginal( a_pType, a_rPos );
+	g_iInSpawnCoin--;
+}
+
 // AInventoryGroupComponent::CollectUnit (static, __stdcall): our cow picked a unit up
 HOOK( 0x00625c10, AInventoryGroupComponent_CollectUnit, TBOOL, void* a_pUnit, void* a_pParentState )
 {
@@ -970,6 +1010,7 @@ void WorldSync::Install( coop::Session* a_pSession, std::mutex* a_pMutex, std::f
 	InstallHook<AUnitManager_DestroyUnitImmediate>();
 	InstallHook<AInventoryComponent_AddUnit>();
 	InstallHook<AInventoryGroupComponent_CollectUnit>();
+	InstallHook<ACoinSpawner_SpawnCoin>();
 	InstallHook<ABikeManager_SpawnBikesAtRacks>();
 	InstallHook<ABikeManager_RespawnBikes>();
 }
