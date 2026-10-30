@@ -196,6 +196,7 @@ enum
 	ID_START,
 	ID_LEAVE,
 	ID_WAIT,
+	ID_NEWGAME,
 	ID_BACK = 99,
 	ID_FRIEND0 = 100,
 	ID_GENDER = 200,
@@ -238,7 +239,11 @@ void BuildLobby()
 		if ( t->IsHost() )
 		{
 			d.items.push_back( { ID_INVITE, L( L"ПРИГЛАСИТЬ ДРУЗЕЙ", L"INVITE FRIENDS" ) } );
-			if ( !g_bLobbyFromPause ) d.items.push_back( { ID_START, L( L"НАЧАТЬ ИГРУ", L"START GAME" ) } );
+			if ( !g_bLobbyFromPause )
+			{
+				d.items.push_back( { ID_NEWGAME, L( L"НОВАЯ ИГРА", L"NEW GAME" ) } );
+				d.items.push_back( { ID_START, L( L"ЗАГРУЗИТЬ ИГРУ", L"LOAD GAME" ) } );
+			}
 			d.focus = 1;
 		}
 		else
@@ -291,6 +296,7 @@ void BuildLobby()
 		g_pLobby = nullptr;
 		if ( id == ID_INVITE ) OpenFriends();
 		else if ( id == ID_START ) MainMenuButton::OpenLoadGame();
+		else if ( id == ID_NEWGAME ) MainMenuButton::OpenNewGame();
 		else if ( g_bReopenLobby )
 		{
 			g_bReopenLobby = false;
@@ -497,7 +503,8 @@ void CoopFlow::Update( bool a_bInLevel, const float* a_pPos )
 		while ( t->PollInvite( inv ) ) g_pNotices->push_back( { inv, Now() } );
 
 		// host: answer world requests, announce our world when we enter it
-		const bool bHostInWorld = bHost && a_bInLevel && *pMainGameLoaded;
+		// (not during the new game intro / creator: the host's world exists once it walks the farm)
+		const bool bHostInWorld = bHost && a_bInLevel && *pMainGameLoaded && TopIs( "ASimState" );
 		coop::PeerId from;
 		while ( bHost && s->PopWorldRequest( from ) )
 		{

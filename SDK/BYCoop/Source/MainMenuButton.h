@@ -10,6 +10,7 @@ using Opener = std::function<void( bool a_bPauseMenu )>;
 
 void Install( Opener a_fnOpen );
 
-// Opens the game's "Load game" screen from the main menu (the host starts its world)
+// Opens the game's "New game" / "Load game" screen from the main menu (the host starts its world)
+void OpenNewGame();
 void OpenLoadGame();
 } // namespace MainMenuButton

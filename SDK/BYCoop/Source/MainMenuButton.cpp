@@ -164,12 +164,15 @@ MEMBER_HOOK( 0x0042fa40, APauseMenuStub, AStartMenuState_OnMenuClose, void )
 	if ( g_fnOpen ) g_fnOpen( true );
 }
 
-void MainMenuButton::OpenLoadGame()
+static void OpenMainMenuItem( TINT a_iButton )
 {
 	if ( !g_pMainMenu || *(TUINTPTR*)g_pMainMenu != MAINMENU_VTABLE ) return;
-	*(TINT*)( g_pMainMenu + OFF_ACTIVATED_ID ) = 1; // FRONTENDBUTTON_LOADGAME
+	*(TINT*)( g_pMainMenu + OFF_ACTIVATED_ID ) = a_iButton;
 	reinterpret_cast<AFrontEndMainMenuState2_OnMenuClose::_hook_obj*>( g_pMainMenu )->CallOriginal();
 }
+
+void MainMenuButton::OpenNewGame() { OpenMainMenuItem( 0 ); }  // FRONTENDBUTTON_NEWGAME
+void MainMenuButton::OpenLoadGame() { OpenMainMenuItem( 1 ); } // FRONTENDBUTTON_LOADGAME
 
 void MainMenuButton::Install( Opener a_fnOpen )
 {
